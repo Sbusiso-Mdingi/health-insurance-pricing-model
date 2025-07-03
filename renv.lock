@@ -1,0 +1,54 @@
+{
+  "R": {
+    "Version": "4.3.1",
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://cloud.r-project.org"
+      }
+    ]
+  },
+  "Packages": {
+    "shiny": {
+      "Package": "shiny",
+      "Version": "1.8.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "c7f4f8d6e6e1c4b1d4a89f9f9d53f9d3"
+    },
+    "dplyr": {
+      "Package": "dplyr",
+      "Version": "1.1.4",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "3b6c0a1c9b9b1a3f0e7e3f7bcb5b2a2c"
+    },
+    "splines": {
+      "Package": "splines",
+      "Version": "4.3.1",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "MASS": {
+      "Package": "MASS",
+      "Version": "7.3-60",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "8a4f33bcbf61dc4bbd8e5e4b48f0c8e2"
+    },
+    "broom": {
+      "Package": "broom",
+      "Version": "1.0.5",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "7f2f4a7c1b4a6a6d4f98e8b6cb5b1f7a"
+    },
+    "bslib": {
+      "Package": "bslib",
+      "Version": "0.6.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "a9c4f2b7f6e8d1a3c9f3e4a7d8c6b5e1"
+    }
+  }
+}
