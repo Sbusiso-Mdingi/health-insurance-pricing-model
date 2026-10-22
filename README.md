@@ -1,105 +1,167 @@
 # Health Insurance Pricing Model
 
-A frequency-severity pricing model for health insurance, built in R on a synthetic portfolio
-of 100,000 policies. A Poisson GLM predicts how often a policyholder claims, a Gamma GLM
-predicts what each claim costs, and the two combine into a pure premium and a loaded premium.
-The models are fitted on 80% of the portfolio and checked on the other 20%, and because the
-data is synthetic, the fitted effects are also compared with the true ones.
+A frequency-severity pricing model for South African private health cover, built in R on a
+synthetic portfolio of 100,000 members across the nine provinces and three plan types. A
+negative binomial GLM predicts how often a member claims, a Gamma GLM predicts what each claim
+costs, and the two combine into a monthly risk premium with a 95% interval. Candidate models
+are compared on a holdout, and because the data is synthetic, the fitted effects and the
+intervals are also checked against the true ones.
 
 **Live calculator:** https://brave-desert-0f162c50f.3.azurestaticapps.net
 (also embedded at https://mdingi.co.za/work/health-insurance-pricing-model)
 
 ## Results
 
-From `reports/validation.md`, on the 20,225 holdout policies (18,400 policy years, 5,914 claims):
+From `reports/validation.md`, on the 20,225 holdout policies (18,451 policy years, 40,140 claims):
 
 | Check | Result |
 | --- | --- |
-| Actual over expected claim cost | 1.010 |
-| Actual over expected claim count | 0.989 |
-| Gini of the pure premium | 0.546, against 0.547 for the true generating model |
-| Poisson dispersion (training) | 0.991, so no overdispersion |
-| Gamma dispersion (training) | 0.898, against a true squared CV of 0.896 |
-| Relativity intervals containing the true value | 11 of 12 |
+| Actual over expected claim cost | 0.988 (the true model scores 0.984 on the same policies) |
+| Actual over expected claim count | 0.999 |
+| Gini of the pure premium | 0.369, against 0.369 for the true generating model |
+| Overdispersion | Poisson dispersion 1.604; negative binomial theta 3.32, against a true 3.33 |
+| Relativity intervals containing the true value | 24 of 25 |
 
-The one miss is the smoker effect on claim cost: 1.596 fitted, 1.649 true, with a 95% interval
-of 1.554 to 1.638. With twelve 95% intervals, one miss is in line with chance. The frequency
-model explains 12.2% of the holdout Poisson deviance, which is normal for claim counts: most of
-the difference between two policies' claims in a year is chance, not rating factors.
+From `reports/coverage.md`, refitting on 200 simulated portfolios:
+
+| 95% intervals | Coverage | Mean SE ratio |
+| --- | --- | --- |
+| Frequency, negative binomial | 95.0% | 0.99 |
+| Frequency, Poisson | 83.3% | 0.70 |
+| Severity, Gamma | 94.7% | 1.00 |
+| Premium, negative binomial x Gamma | 92.5% | 0.99 |
+
+The Poisson model gets the mean right but its standard errors are about 30% too small, which
+is why the frequency model is negative binomial. The premium intervals are slightly narrow for
+women aged 31 to 40 (88% coverage at age 40): the intervals cover estimation error only, and
+the age spline still smooths part of the maternity peak in women's claim frequency.
+
+The holdout cost is 1.2% below expected for the true model as well as the fitted one, so the
+shortfall is large-claim noise, not model bias: 3% of claims come from a Pareto tail.
 
 ## Data
 
-`scripts/synthetic_data_generation.R` simulates the portfolio with known parameters:
+`scripts/simulate.R` holds every true parameter and the simulation;
+`scripts/synthetic_data_generation.R` runs it once (seed 123) and writes
+`data/synthetic_health_insurance_data.csv`. The parameters are illustrative assumptions chosen to
+look plausible for a private medical scheme, not estimates from real data.
 
 | Variable | Generation |
 | --- | --- |
-| Age | Uniform whole years, 18 to 85 |
+| Age | Principal members aged 18 to 85, 18 + 67 x Beta(2, 2.8), so working-age heavy |
 | Sex | Female 52%, male 48% |
-| Region | Southeast 35%, southwest 25%, northeast 20%, northwest 20% |
-| Children | Poisson with mean min(age / 30, 2), capped at 5 |
-| Smoker | Probability plogis(-3 + 0.04 age) |
-| BMI | Lognormal, rising with age, for men and for smokers, clipped to 18 to 45 |
+| Province | Gauteng 38%, Western Cape 17%, KwaZulu-Natal 15%, Eastern Cape 7%, Mpumalanga 6%, Free State, Limpopo and North West 5% each, Northern Cape 2% |
+| Children | Poisson, peaking for members around 40, capped at 5 |
+| Smoker | More common in men and falling with age (about 12% of women and 31% of men) |
+| BMI | Lognormal around 26, higher for women, rising with age to 60, clipped to 16 to 50 |
+| Plan | Hospital, Saver or Comprehensive, chosen by a multinomial logit: older members buy richer cover, families lean to Saver |
 | Exposure | One policy year for 80% of policies, uniform 0.1 to 1 for the rest |
-| ClaimCount | Poisson with rate exposure x exp(-2.5 + 0.015 age + 0.03 (BMI - 25) + 0.6 smoker + 0.08 children + 0.2 southeast) |
-| Charges | Sum over the policy's claims of independent lognormal costs, meanlog 8 + 0.01 age + 0.02 (BMI - 25) + 0.5 smoker + 0.1 children, sdlog 0.8 |
+| ClaimCount | Negative binomial: Poisson given a gamma frailty with variance 0.3 |
+| Charges | Sum over the policy's claims of independent costs: lognormal (sdlog 1.1) with probability 0.97, Pareto (alpha 2.3) large claims otherwise |
 
-Sex has no true effect on either component, and region affects frequency only through the
-southeast. These null effects are a check that the models do not find what is not there.
+On the log scale, claim frequency rises 0.025 a year with age and faster after 55, has a
+maternity peak for women around 31, rises with BMI above 25 and below 20, and is higher for
+smokers (+0.26) and per child (+0.22). Day-to-day benefits multiply the number of claims by 4
+(Saver) and 10 (Comprehensive) and the cost per claim by 0.45 and 0.25. Provinces outside
+Gauteng have lower frequency and cost, in line with lower private hospital use and tariffs.
 
 ## Models
 
-`scripts/model_training.R` fits both models on a random 80% of policies:
+`scripts/models.R` defines the candidates and `scripts/model_training.R` compares them on a
+random 80% of policies:
 
-- **Frequency:** Poisson GLM with a log link, `ClaimCount ~ ns(Age, 4) + ns(BMI, 4) + Sex +
-  Smoker + Children + Region + offset(log(Exposure))`.
-- **Severity:** Gamma GLM with a log link on the average cost per claim, weighted by the claim
-  count, with the same rating factors. Weighting by claim count makes this equivalent to
-  fitting every claim separately.
-- **Premium:** pure premium = expected claims per policy year x expected cost per claim, and
-  annual premium = pure premium x (1 + loading).
-- **Risk classes:** the quartiles of the pure premium over the holdout portfolio (low,
-  moderate, high and very high).
+| Name | Age, BMI and sex terms |
+| --- | --- |
+| F1, S1 | linear Age and BMI, Sex |
+| F2, S2 | ns(Age, 4), ns(BMI, 4), Sex |
+| F3 | ns(Age, 10) x Sex interaction, ns(BMI, 4) |
+| S3 | ns(Age, 4) x Sex interaction, ns(BMI, 4) |
 
-The script then validates on the holdout (actual over expected, lift in ten bands of equal
-exposure, Lorenz curve and Gini), compares relativities with the true parameters, and writes:
+Every candidate also includes Smoker, Children, Province and Plan. Frequency candidates are
+fitted as Poisson and negative binomial GLMs with an exposure offset; severity candidates as
+Gamma GLMs on the average cost per claim, weighted by claim count (equivalent to fitting every
+claim). Terms are added by nested tests at the 5% level, likelihood ratio tests for frequency
+and F tests with the estimated dispersion for severity, which selects F3 and S2. The severity
+age by sex interaction is rejected (p = 0.24), correctly, since the true severity has none.
 
-- `models/freq_model.rds`, `models/sev_model.rds` and `models/portfolio_percentiles.rds`
-- `reports/validation.md`
-- `dashboard/src/model.json`, the coefficients and validation results for the calculator
-- `dashboard/test/parity-cases.json`, R's predictions for 300 random profiles
+| Pure premium model, holdout | Tweedie deviance explained | Gini | Actual over expected |
+| --- | --- | --- | --- |
+| F1 x S1, linear | 15.4% | 0.363 | 0.991 |
+| F2 x S2, splines | 15.8% | 0.367 | 0.987 |
+| F3 x S2, final | 15.9% | 0.369 | 0.988 |
+| F3 x S3 | 15.9% | 0.369 | 0.988 |
+| Single Tweedie GLM (power 1.6), F3 terms | 15.9% | 0.369 | 0.987 |
+| True model | 15.9% | 0.369 | 0.984 |
+
+The single Tweedie GLM ranks risks as well as the frequency-severity pair, but the pair shows
+separately how plans and factors change claim counts and claim sizes, which the calculator uses.
+
+**Premium:** expected claims cost = expected claims per year x expected cost per claim;
+annual premium = expected claims cost x (1 + loading); monthly premium = annual / 12. The
+calculator's default loading of 15% is an assumption. The 95% interval uses the delta method
+on the log scale with each model's coefficient covariance matrix; the two models' estimates are
+independent, so their variances add.
+
+**Risk classes:** the quartiles of the expected claims cost among holdout members on the same
+plan, since across plans the cost mostly reflects the benefits bought.
+
+`scripts/coverage_study.R` simulates 200 portfolios of 80,000 policies from the true model,
+refits the final models (and the Poisson version) on each, and records how often the intervals
+for the relativities and for six fixed profiles' expected cost contain the true value. A first
+run with 6 degrees of freedom for the age spline covered women aged 31 and 40 only 77% to 80% of
+the time; F3's degrees of freedom are now chosen by AIC, which picks 10.
+
+Outputs:
+
+- `models/freq_model.rds`, `models/sev_model.rds` (with their covariance matrices) and
+  `models/portfolio_percentiles.rds`
+- `reports/validation.md` and `reports/coverage.md`, with every estimate in
+  `reports/coverage_estimates.csv`
+- `dashboard/src/model.json` and `dashboard/src/coverage.json` for the calculator
+- `dashboard/test/parity-cases.json`, R's predictions and standard errors for 300 random profiles
 
 ## Calculator
 
-`dashboard/` is a React and TypeScript page with three views: pricing a policy with the
-factor-by-factor build-up of the premium, fitted against true rating factors, and the holdout
-checks. Both GLMs are additive on the log scale, so the export holds each factor's term, with
-age and BMI tabulated at every value the calculator accepts. The parity test checks that the
-calculator matches R's `predict()` on all 300 profiles to within 1e-9.
+`dashboard/` is a React and TypeScript page with three views: pricing a member with the
+factor-by-factor build-up and the interval; fitted against true age and BMI curves and
+relativities; and the holdout checks, model comparison and coverage. It rebuilds each model's
+design row from the coefficient names and the exported spline bases, so the parity test can
+check that it matches R's predictions and standard errors on all 300 profiles to within 1e-9.
 
 ```bash
 Rscript scripts/synthetic_data_generation.R
+Rscript scripts/coverage_study.R     # about 7 minutes on 8 cores
 Rscript scripts/model_training.R
 cd dashboard && bun install && bun test && bun run build
 ```
+
+`.github/workflows/check.yml` reruns the R scripts (with a 4-portfolio coverage study), the
+parity test and the build on every push. Package versions are in `renv.lock`.
 
 The build is a static site, hosted on Azure Static Web Apps. The original Shiny app in
 `shiny-app/` uses the same fitted models: `cd shiny-app && Rscript -e 'shiny::runApp()'`.
 
 ## Limitations
 
-- Synthetic data: the premiums are illustrative, not real insurance rates.
+- South African medical schemes must charge community rates under the Medical Schemes Act: a
+  scheme cannot price by age, sex, health or province. A risk premium like this one shows the
+  underlying cost of each member, which matters for understanding cross-subsidies, the Risk
+  Equalisation Fund debate and products outside the Act such as gap cover, but it is not a
+  contribution a scheme could charge.
+- Synthetic data with illustrative parameters: the premiums are not real rates.
+- Principal members only; dependants enter through the number of children, and there are no
+  adult dependants, late joiner penalties, waiting periods or chronic condition benefits.
 - Frequency and severity are independent by construction, and the loading is a flat
   percentage.
-- No deductibles, benefit limits, inflation, large-claim treatment or credibility weighting.
-- The rating factors are fitted as additive on the log scale, with no interactions.
+- No savings account mechanics, benefit limits, co-payments, inflation or credibility weighting.
 
 ## Structure
 
 ```
 data/        synthetic_health_insurance_data.csv
-scripts/     synthetic_data_generation.R, model_training.R
+scripts/     simulate.R, synthetic_data_generation.R, models.R, model_training.R, coverage_study.R
 models/      fitted models and portfolio percentiles
-reports/     pricing_methodology.md, validation.md
+reports/     pricing_methodology.md, validation.md, coverage.md
 dashboard/   React calculator, model export and parity test
 shiny-app/   original Shiny app
 ```

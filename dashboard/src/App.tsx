@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
-import { BarChart, LineChart } from "./charts";
+import { BarChart, LineChart, type Band } from "./charts";
+import coverage from "./coverage.json";
 import {
   AGE_RANGE,
-  BASE,
   BMI_RANGE,
   MODEL,
-  REGIONS,
-  portfolioPercentile,
+  PLANS,
+  PROVINCES,
+  planPercentile,
   quote,
   riskClass,
   type Profile,
@@ -15,6 +16,9 @@ import {
 const money = (v: number) => `R ${Math.round(v).toLocaleString("en-US")}`;
 const fixed = (v: number, d = 3) => v.toFixed(d);
 const times = (v: number) => `× ${v.toFixed(3)}`;
+const pct = (v: number, d = 1) => `${(100 * v).toFixed(d)}%`;
+const rands = (v: number) => (v >= 1000 ? `R ${v / 1000}k` : `R ${v}`);
+const Z95 = 1.96;
 
 type Tab = "quote" | "factors" | "validation";
 
@@ -31,9 +35,9 @@ export function App({ embedded }: { embedded: boolean }) {
       {!embedded && (
         <header className="intro">
           <p className="kicker">Health insurance pricing · Live preview</p>
-          <h1>Price a health policy with two GLMs</h1>
+          <h1>Price a South African health policy with two GLMs</h1>
           <p>
-            A Poisson GLM predicts how often a policyholder claims and a Gamma GLM predicts what
+            A negative binomial GLM predicts how often a member claims and a Gamma GLM predicts what
             each claim costs. Change the profile to see the premium, the factors behind it and how
             the models hold up on policies they never saw.
           </p>
@@ -56,8 +60,9 @@ export function App({ embedded }: { embedded: boolean }) {
         <ValidationTab />
       </div>
       <p className="footnote">
-        Synthetic data: the premiums are illustrative, not real insurance rates. The models are
-        fitted in R; this page applies the exported coefficients and gives the same prices as R.
+        Synthetic data: the premiums are illustrative, not real medical scheme contributions. The
+        models are fitted in R; this page applies the exported coefficients and gives the same prices
+        and intervals as R.
         {embedded ? "" : " Source: github.com/Sbusiso-Mdingi/health-insurance-pricing-model."}
       </p>
     </div>
@@ -72,34 +77,33 @@ function QuoteTab() {
     bmi: 27.5,
     sex: "female",
     smoker: "no",
-    region: "southeast",
+    province: "Gauteng",
+    plan: "Saver",
     children: 1,
   });
-  const [loading, setLoading] = useState(0.3);
+  const [loading, setLoading] = useState(0.15);
   const set = <K extends keyof Profile>(k: K, v: Profile[K]) => setProfile((p) => ({ ...p, [k]: v }));
 
   const q = useMemo(() => quote(profile), [profile]);
-  const pct = portfolioPercentile(q.pure);
-  const risk = riskClass(pct);
+  const load = 1 + loading;
+  const monthly = (annual: number) => (annual * load) / 12;
+  const percentile = planPercentile(q.pure, profile.plan);
+  const risk = riskClass(percentile);
   const ageCurve = useMemo(() => {
-    const pts: [number, number][] = [];
-    for (let a = AGE_RANGE[0]; a <= AGE_RANGE[1]; a++) pts.push([a, quote({ ...profile, age: a }).pure * (1 + loading)]);
-    return pts;
+    const line: [number, number][] = [];
+    const band: Band["points"] = [];
+    for (let a = AGE_RANGE[0]; a <= AGE_RANGE[1]; a++) {
+      const r = quote({ ...profile, age: a });
+      line.push([a, monthly(r.pure)]);
+      band.push([a, monthly(r.pureLow), monthly(r.pureHigh)]);
+    }
+    return { line, band };
   }, [profile, loading]);
-
-  const values: Record<string, string> = {
-    age: `${profile.age}`,
-    bmi: profile.bmi.toFixed(1),
-    sex: profile.sex,
-    smoker: profile.smoker,
-    children: `${profile.children}`,
-    region: profile.region,
-  };
 
   return (
     <div className="quote-grid">
-      <section className="panel" aria-label="Policyholder">
-        <h3>Policyholder</h3>
+      <section className="panel" aria-label="Member">
+        <h3>Member</h3>
         <Slider
           label="Age"
           value={profile.age}
@@ -126,36 +130,45 @@ function QuoteTab() {
           value={profile.children}
           onChange={(v) => set("children", v)}
         />
-        <div className="field" role="group" aria-label="Region">
-          <span className="field-label">Region</span>
-          <div className="region-grid">
-            {REGIONS.map((r) => (
-              <button key={r} aria-pressed={profile.region === r} onClick={() => set("region", r)}>
+        <div className="field" role="group" aria-label="Province">
+          <span className="field-label">Province</span>
+          <div className="province-grid">
+            {PROVINCES.map((r) => (
+              <button key={r} aria-pressed={profile.province === r} onClick={() => set("province", r)}>
                 {r}
               </button>
             ))}
           </div>
         </div>
+        <Choice label="Plan" options={PLANS} value={profile.plan} onChange={(v) => set("plan", v)} />
         <Slider
-          label="Loading for expenses and profit"
+          label="Loading for expenses"
           value={loading}
           min={0}
-          max={0.6}
+          max={0.4}
           step={0.01}
           display={`${Math.round(loading * 100)}%`}
           onChange={setLoading}
         />
-        <p className="hint">Ages and BMIs are limited to the ranges the models were fitted on.</p>
+        <p className="hint">
+          Hospital plans cover hospital events only, Saver plans add a medical savings account, and
+          Comprehensive plans add day-to-day benefits. Ages and BMIs are limited to the ranges the
+          models were fitted on. The 15% loading is an assumption, not a fitted value.
+        </p>
       </section>
 
       <div>
         <section className="panel" aria-live="polite">
           <div className="premium">
             <div>
-              <p className="tag">Annual premium</p>
+              <p className="tag">Risk premium</p>
               <p className="premium-figure">
-                {money(q.pure * (1 + loading))}
-                <small>a year</small>
+                {money(monthly(q.pure))}
+                <small>a month</small>
+              </p>
+              <p className="premium-sub">
+                {money(q.pure * load)} a year. 95% interval {money(monthly(q.pureLow))} to {money(monthly(q.pureHigh))}{" "}
+                a month.
               </p>
             </div>
             <span className={`badge ${risk.tone}`}>{risk.label}</span>
@@ -163,15 +176,18 @@ function QuoteTab() {
           <dl className="stats">
             <div>
               <dt>Claims a year</dt>
-              <dd>{fixed(q.frequency)}</dd>
+              <dd>{fixed(q.frequency, 2)}</dd>
             </div>
             <div>
               <dt>Cost per claim</dt>
               <dd>{money(q.severity)}</dd>
             </div>
             <div>
-              <dt>Pure premium</dt>
-              <dd>{money(q.pure)}</dd>
+              <dt>Expected claims cost</dt>
+              <dd>
+                {money(q.pure)}
+                <small>a year, before loading</small>
+              </dd>
             </div>
           </dl>
           <div className="strip">
@@ -180,7 +196,7 @@ function QuoteTab() {
               <i />
               <i />
               <i />
-              <span className="strip-marker" style={{ left: `${pct}%` }} />
+              <span className="strip-marker" style={{ left: `${percentile}%` }} />
             </div>
             <div className="strip-labels" aria-hidden="true">
               <span>Low</span>
@@ -189,8 +205,9 @@ function QuoteTab() {
               <span>Very high</span>
             </div>
             <p className="hint">
-              A higher pure premium than {Math.round(pct)}% of the {MODEL.validation.holdout.policies.toLocaleString("en-US")}{" "}
-              holdout policies. The risk classes are the portfolio's quartiles.
+              A higher expected cost than {Math.round(percentile)}% of holdout members on the {profile.plan} plan.
+              The risk classes are the plan's quartiles, because across plans the cost mostly reflects
+              the benefits bought.
             </p>
           </div>
         </section>
@@ -204,13 +221,13 @@ function QuoteTab() {
                 <th>Value</th>
                 <th className="num">Frequency</th>
                 <th className="num">Severity</th>
-                <th className="num">Premium</th>
+                <th className="num">Cost</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Base profile</td>
-                <td className="muted">age 40, BMI 25</td>
+                <td className="muted">see below</td>
                 <td className="num">{fixed(q.base.frequency)}</td>
                 <td className="num">{money(q.base.severity)}</td>
                 <td className="num">{money(q.base.pure)}</td>
@@ -218,14 +235,14 @@ function QuoteTab() {
               {q.factors.map((f) => (
                 <tr key={f.key}>
                   <td>{f.label}</td>
-                  <td style={{ textTransform: "capitalize" }}>{values[f.key]}</td>
+                  <td>{f.value}</td>
                   <td className="num">{times(f.frequency)}</td>
                   <td className="num">{times(f.severity)}</td>
                   <td className="num">{times(f.combined)}</td>
                 </tr>
               ))}
               <tr className="total">
-                <td>Pure premium</td>
+                <td>Expected claims cost</td>
                 <td />
                 <td className="num">{fixed(q.frequency)}</td>
                 <td className="num">{money(q.severity)}</td>
@@ -236,35 +253,45 @@ function QuoteTab() {
                 <td>{Math.round(loading * 100)}%</td>
                 <td />
                 <td />
-                <td className="num">{times(1 + loading)}</td>
+                <td className="num">{times(load)}</td>
               </tr>
               <tr className="total">
                 <td>Annual premium</td>
                 <td />
                 <td />
                 <td />
-                <td className="num">{money(q.pure * (1 + loading))}</td>
+                <td className="num">{money(q.pure * load)}</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p className="hint">
-          The base profile is a 40-year-old female non-smoker in the northeast with a BMI of 25 and
-          no children. Each factor multiplies the base frequency and severity; the premium factor
-          is the product of the two.
+          The base profile is a 40-year-old woman in Gauteng on a Hospital plan, a non-smoker with a
+          BMI of 25 and no children. Each factor multiplies the base frequency and severity. Age and
+          sex are shown together because the frequency model lets the age curve differ by sex. The
+          interval comes from the two models' coefficient covariance matrices (the delta method on
+          the log scale) and covers estimation uncertainty in the expected cost, not the spread of
+          one member's claims.
         </p>
 
-        <h3 className="section-title">Premium by age for this profile</h3>
+        <h3 className="section-title">Monthly premium by age for this profile</h3>
         <LineChart
-          label="Annual premium by age for the chosen profile"
-          series={[{ points: ageCurve, color: "var(--gold)" }]}
-          marker={[profile.age, q.pure * (1 + loading)]}
+          label="Monthly premium by age for the chosen profile, with its 95% interval"
+          bands={[{ points: ageCurve.band, color: "rgba(224, 164, 73, 0.25)" }]}
+          series={[{ points: ageCurve.line, color: "var(--gold)" }]}
+          marker={[profile.age, monthly(q.pure)]}
           xLabel="Age"
           yMin={0}
-          yFormat={(v) => (v >= 1000 ? `R ${v / 1000}k` : `R ${v}`)}
+          yFormat={rands}
           width={460}
           height={240}
         />
+        <p className="hint">
+          South African medical schemes must charge community rates under the Medical Schemes Act,
+          so a scheme could not charge these prices. A risk premium like this shows the underlying
+          cost of each member, which is what a scheme uses to understand cross-subsidies and what
+          gap cover and other insurers can price on.
+        </p>
       </div>
     </div>
   );
@@ -326,19 +353,40 @@ function Choice<T extends string | number>({
 /* -------------------------------------------------------------- Factors */
 
 type Component = "pure" | "freq" | "sev";
+type Side = { fit: number[]; se: number[]; true: number[] };
+type Curve = { freq: Side; sev: Side };
 
 function FactorsTab() {
   const [component, setComponent] = useState<Component>("pure");
-  const curve = (fitted: { freq: number[]; sev: number[] }, xs: number[]): [number, number][] =>
-    xs.map((x, i) => {
-      const log = component === "freq" ? fitted.freq[i] : component === "sev" ? fitted.sev[i] : fitted.freq[i] + fitted.sev[i];
-      return [x, Math.exp(log)];
-    });
-  const ages = MODEL.frequency.age.map((_, i) => AGE_RANGE[0] + i);
-  const bmis = MODEL.frequency.bmi.map((_, i) => BMI_RANGE[0] + i / 10);
-  const fittedAge = { freq: MODEL.frequency.age, sev: MODEL.severity.age };
-  const fittedBmi = { freq: MODEL.frequency.bmi, sev: MODEL.severity.bmi };
-  const what = { pure: "pure premium", freq: "claim frequency", sev: "cost per claim" }[component];
+  const ages = MODEL.curves.age.female.freq.fit.map((_, i) => AGE_RANGE[0] + i);
+  const bmis = MODEL.curves.bmi.freq.fit.map((_, i) => BMI_RANGE[0] + i / 10);
+  const what = { pure: "expected cost", freq: "claim frequency", sev: "cost per claim" }[component];
+
+  // Log relativity of the chosen component, fitted with its standard error,
+  // and true. The two models are independent, so the variances add.
+  const pick = (c: Curve, i: number) => {
+    if (component === "freq") return { fit: c.freq.fit[i], se: c.freq.se[i], truth: c.freq.true[i] };
+    if (component === "sev") return { fit: c.sev.fit[i], se: c.sev.se[i], truth: c.sev.true[i] };
+    return {
+      fit: c.freq.fit[i] + c.sev.fit[i],
+      se: Math.hypot(c.freq.se[i], c.sev.se[i]),
+      truth: c.freq.true[i] + c.sev.true[i],
+    };
+  };
+  const lines = (c: Curve, xs: number[], color: string, band: string) => {
+    const r = xs.map((x, i) => [x, pick(c, i)] as const);
+    return {
+      fitted: { points: r.map(([x, v]): [number, number] => [x, Math.exp(v.fit)]), color },
+      truth: { points: r.map(([x, v]): [number, number] => [x, Math.exp(v.truth)]), color: "var(--ink)", dashed: true, width: 1.5 },
+      band: {
+        points: r.map(([x, v]): [number, number, number] => [x, Math.exp(v.fit - Z95 * v.se), Math.exp(v.fit + Z95 * v.se)]),
+        color: band,
+      },
+    };
+  };
+  const female = lines(MODEL.curves.age.female as Curve, ages, "var(--gold)", "rgba(224, 164, 73, 0.25)");
+  const male = lines(MODEL.curves.age.male as Curve, ages, "var(--green)", "rgba(47, 106, 79, 0.18)");
+  const bmi = lines(MODEL.curves.bmi as Curve, bmis, "var(--gold)", "rgba(224, 164, 73, 0.25)");
 
   return (
     <>
@@ -349,7 +397,7 @@ function FactorsTab() {
         <div className="segmented small inline" role="group" aria-label="Model component">
           {(
             [
-              ["pure", "Pure premium"],
+              ["pure", "Expected cost"],
               ["freq", "Frequency"],
               ["sev", "Severity"],
             ] as const
@@ -361,40 +409,59 @@ function FactorsTab() {
         </div>
       </div>
       <p className="hint" style={{ marginTop: 0, marginBottom: 18 }}>
-        Because the data is synthetic, the true effect of each factor is known. The gold line is
-        the fitted spline; the dashed line is the effect used to generate the data. Both are
-        relative to the base profile (age 40, BMI 25).
+        Because the data is synthetic, the true effect of each factor is known. Solid lines are the
+        fitted splines with their 95% bands; dashed lines are the effects used to generate the data.
+        All are relative to the base profile, a 40-year-old woman with a BMI of 25. The frequency
+        curve for women includes a maternity peak around age 31.
       </p>
       <div className="two-up">
         <section className="panel">
           <h3>Age, effect on {what}</h3>
           <LineChart
-            label={`Fitted and true age relativity for ${what}`}
-            series={[
-              { points: curve(MODEL.true_curves.age, ages), color: "var(--ink)", dashed: true, width: 1.5 },
-              { points: curve(fittedAge, ages), color: "var(--gold)" },
-            ]}
+            label={`Fitted and true age relativity for ${what}, women and men`}
+            bands={[female.band, male.band]}
+            series={[female.fitted, male.fitted, female.truth, male.truth]}
             xLabel="Age"
             yFormat={(v) => `× ${v}`}
             height={300}
             width={420}
           />
-          <Legend />
+          <ul className="legend">
+            <li>
+              <i style={{ background: "var(--gold)" }} />
+              Women
+            </li>
+            <li>
+              <i style={{ background: "var(--green)" }} />
+              Men
+            </li>
+            <li>
+              <i className="dashed" />
+              True
+            </li>
+          </ul>
         </section>
         <section className="panel">
           <h3>BMI, effect on {what}</h3>
           <LineChart
             label={`Fitted and true BMI relativity for ${what}`}
-            series={[
-              { points: curve(MODEL.true_curves.bmi, bmis), color: "var(--ink)", dashed: true, width: 1.5 },
-              { points: curve(fittedBmi, bmis), color: "var(--gold)" },
-            ]}
+            bands={[bmi.band]}
+            series={[bmi.fitted, bmi.truth]}
             xLabel="BMI"
             yFormat={(v) => `× ${v}`}
             height={300}
             width={420}
           />
-          <Legend />
+          <ul className="legend">
+            <li>
+              <i style={{ background: "var(--gold)" }} />
+              Fitted
+            </li>
+            <li>
+              <i className="dashed" />
+              True
+            </li>
+          </ul>
         </section>
       </div>
 
@@ -417,12 +484,18 @@ function FactorsTab() {
                 <td>{f.factor}</td>
                 <td>{f.level}</td>
                 <td className="num">
-                  {fixed(f.freq)}
-                  <span className="ci">
-                    {fixed(f.freq_lo)} to {fixed(f.freq_hi)}
-                  </span>
+                  {f.freq === null ? (
+                    <span className="muted">by age</span>
+                  ) : (
+                    <>
+                      {fixed(f.freq)}
+                      <span className="ci">
+                        {fixed(f.freq_lo!)} to {fixed(f.freq_hi!)}
+                      </span>
+                    </>
+                  )}
                 </td>
-                <td className="num">{fixed(f.true_freq)}</td>
+                <td className="num">{f.true_freq === null ? "" : fixed(f.true_freq)}</td>
                 <td className="num">
                   {fixed(f.sev)}
                   <span className="ci">
@@ -436,26 +509,11 @@ function FactorsTab() {
         </table>
       </div>
       <p className="hint">
-        Multiplicative relativities against the base level ({BASE.sex}, non-smoker, {BASE.region}),
-        with 95% confidence intervals. Sex has no true effect on either model and region affects
-        frequency only through the southeast.
+        Multiplicative relativities against the base level (Gauteng, Hospital plan, non-smoker, no
+        children), with 95% confidence intervals. The sex effect on frequency depends on age, so it
+        is shown in the age chart instead.
       </p>
     </>
-  );
-}
-
-function Legend() {
-  return (
-    <ul className="legend">
-      <li>
-        <i style={{ background: "var(--gold)" }} />
-        Fitted
-      </li>
-      <li>
-        <i className="dashed" />
-        True
-      </li>
-    </ul>
   );
 }
 
@@ -464,13 +522,9 @@ function Legend() {
 function ValidationTab() {
   const v = MODEL.validation;
   const h = v.holdout;
-  const factorName = (f: (typeof MODEL.factors)[number]) =>
-    f.factor === "Region" ? `${f.level} region` : f.factor === "Sex" ? f.level : f.factor.toLowerCase();
-  const misses = MODEL.factors.flatMap((f) => [
-    { name: factorName(f), part: "frequency", est: f.freq, lo: f.freq_lo, hi: f.freq_hi, truth: f.true_freq },
-    { name: factorName(f), part: "severity", est: f.sev, lo: f.sev_lo, hi: f.sev_hi, truth: f.true_sev },
-  ]).filter((r) => r.truth < r.lo || r.truth > r.hi);
+  const c = MODEL.comparison;
   const lorenz = (l: { x: number[]; y: number[] }): [number, number][] => l.x.map((x, i) => [x * 100, l.y[i] * 100]);
+  const premiumRows = coverage.models.find((m) => m.model.startsWith("Premium, negative binomial"))!;
 
   return (
     <>
@@ -495,17 +549,20 @@ function ValidationTab() {
           </dd>
         </div>
         <div>
-          <dt>Poisson dispersion</dt>
+          <dt>Overdispersion</dt>
           <dd>
-            {fixed(MODEL.frequency.dispersion)}
-            <small>1 means no overdispersion</small>
+            {fixed(MODEL.frequency.poisson_dispersion)}
+            <small>
+              Poisson dispersion; negative binomial theta {fixed(MODEL.frequency.theta, 2)}, true{" "}
+              {fixed(MODEL.frequency.theta_true, 2)}
+            </small>
           </dd>
         </div>
         <div>
           <dt>Gamma dispersion</dt>
           <dd>
             {fixed(MODEL.severity.dispersion)}
-            <small>true squared CV {fixed(Math.exp(0.64) - 1)}</small>
+            <small>true squared CV per claim {fixed(MODEL.severity.dispersion_true)}</small>
           </dd>
         </div>
       </dl>
@@ -518,7 +575,7 @@ function ValidationTab() {
             groups={v.lift.map((l) => ({ label: String(l.band), values: [l.predicted, l.actual] }))}
             colors={["var(--gold)", "var(--ink)"]}
             xLabel="Band, lowest to highest predicted cost"
-            yFormat={(x) => (x >= 1000 ? `R ${x / 1000}k` : `R ${x}`)}
+            yFormat={rands}
             width={420}
             height={300}
           />
@@ -565,24 +622,147 @@ function ValidationTab() {
         </section>
       </div>
 
+      <h3 className="section-title">Model comparison</h3>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Pure premium model</th>
+              <th className="num">Deviance explained</th>
+              <th className="num">Gini</th>
+              <th className="num">Actual over expected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.pure.map((r) => (
+              <tr key={r.model}>
+                <td>{r.model}</td>
+                <td className="num">{pct(r.deviance_explained)}</td>
+                <td className="num">{fixed(r.gini)}</td>
+                <td className="num">{fixed(r.cost_ae)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="hint">
+        Holdout cost per policy year; deviance explained uses the Tweedie deviance with power 1.6.
+        F1 and S1 are linear in age and BMI, F2 and S2 use natural splines, F3 adds an age by sex
+        interaction to frequency and S3 adds one to severity. The single Tweedie GLM uses the F3
+        terms.
+      </p>
+      <div className="two-up" style={{ marginTop: 18 }}>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Frequency</th>
+                <th className="num">AIC</th>
+                <th className="num">Deviance explained</th>
+              </tr>
+            </thead>
+            <tbody>
+              {c.frequency.map((r) => (
+                <tr key={r.model + r.family}>
+                  <td>
+                    {r.model} {r.family === "negbin" ? "negative binomial" : "Poisson"}
+                  </td>
+                  <td className="num">{Math.round(r.aic).toLocaleString("en-US")}</td>
+                  <td className="num">{pct(r.deviance_explained)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Nested test</th>
+                <th className="num">Statistic</th>
+                <th className="num">p-value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...c.nested_tests.frequency, ...c.nested_tests.severity].map((t) => (
+                <tr key={t.from}>
+                  <td>
+                    {t.from} to {t.to}
+                  </td>
+                  <td className="num">{t.statistic.toFixed(t.statistic > 100 ? 0 : 2)}</td>
+                  <td className="num">{t.p < 0.001 ? "< 0.001" : fixed(t.p)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="hint">
+        Training AIC and holdout Poisson deviance; the negative binomial has the same mean as the
+        Poisson but a much better likelihood. Terms were added by nested tests at the 5% level
+        (likelihood ratio for frequency, F tests with the estimated dispersion for severity), which
+        selects {c.final.frequency} and {c.final.severity}.
+      </p>
+
+      <h3 className="section-title">Interval coverage</h3>
+      <div className="two-up">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Intervals</th>
+                <th className="num">Coverage</th>
+                <th className="num">SE ratio</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coverage.models.map((m) => (
+                <tr key={m.model}>
+                  <td>{m.model}</td>
+                  <td className="num">{pct(m.overall.coverage)}</td>
+                  <td className="num">{fixed(m.overall.se_ratio, 2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Premium interval</th>
+                <th className="num">Coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {premiumRows.rows.map((r) => (
+                <tr key={r.target}>
+                  <td>{r.target}</td>
+                  <td className="num">{pct(r.coverage)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="hint">
+        Share of 95% intervals containing the true value over {coverage.reps} simulated portfolios of{" "}
+        {coverage.policies.toLocaleString("en-US")} policies, refitted each time. The Monte Carlo
+        standard error is {(100 * coverage.monte_carlo_se).toFixed(1)} points per row. SE ratio is the
+        mean standard error over the spread of the estimates: 1 means the standard errors are the
+        right size.
+      </p>
       <div className="caveat">
         <p>
-          The fitted model ranks risks almost exactly as well as the model that generated the data:
-          its Gini is {fixed(h.gini_model)} against {fixed(h.gini_true)}. The frequency model
-          explains {(100 * h.freq_deviance_explained).toFixed(1)}% of the Poisson deviance, which
-          is normal for claim counts, because most of the difference between two policies' claims
-          in a year is chance.
+          Ignoring overdispersion matters: Poisson standard errors are about 30% too small, and its
+          intervals miss the true value about three times as often as they should. The negative
+          binomial and Gamma intervals cover close to 95%.
         </p>
-        {misses.length > 0 && (
-          <p>
-            Of the twelve relativity intervals, {misses.length === 1 ? "one misses" : `${misses.length} miss`} the
-            true value:{" "}
-            {misses
-              .map((m) => `${m.name} ${m.part} (fitted ${fixed(m.est)}, true ${fixed(m.truth)})`)
-              .join("; ")}
-            . With 95% intervals, about one miss in twenty is expected by chance.
-          </p>
-        )}
+        <p>
+          The premium intervals are slightly narrow for women in their thirties and forties. The
+          intervals only cover estimation error, and the age spline still smooths part of the
+          maternity peak in women's claim frequency, a small bias the intervals do not include.
+        </p>
       </div>
     </>
   );

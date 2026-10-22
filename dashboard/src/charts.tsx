@@ -3,6 +3,8 @@
  */
 type Point = [number, number];
 export type Series = { points: Point[]; color: string; dashed?: boolean; width?: number };
+/** A shaded interval: [x, low, high] per point. */
+export type Band = { points: [number, number, number][]; color: string };
 
 const PAD = { top: 12, right: 14, bottom: 34, left: 58 };
 
@@ -17,6 +19,7 @@ function ticks(lo: number, hi: number, n = 5) {
 
 export function LineChart({
   series,
+  bands = [],
   height = 260,
   xLabel,
   yFormat = (v) => String(v),
@@ -28,6 +31,7 @@ export function LineChart({
 }: {
   width?: number;
   series: Series[];
+  bands?: Band[];
   height?: number;
   xLabel?: string;
   yFormat?: (v: number) => string;
@@ -36,7 +40,10 @@ export function LineChart({
   marker?: Point;
   label: string;
 }) {
-  const all = series.flatMap((s) => s.points);
+  const all = [
+    ...series.flatMap((s) => s.points),
+    ...bands.flatMap((b) => b.points.flatMap(([x, lo, hi]): Point[] => [[x, lo], [x, hi]])),
+  ];
   const x0 = Math.min(...all.map((p) => p[0]));
   const x1 = Math.max(...all.map((p) => p[0]));
   const ys = all.map((p) => p[1]);
@@ -70,6 +77,14 @@ export function LineChart({
           {xLabel}
         </text>
       )}
+      {bands.map((b, i) => (
+        <path
+          key={i}
+          d={path(b.points.map(([x, , hi]) => [x, hi])) + path([...b.points].reverse().map(([x, lo]) => [x, lo])).replace("M", "L") + "Z"}
+          fill={b.color}
+          stroke="none"
+        />
+      ))}
       {series.map((s, i) => (
         <path
           key={i}

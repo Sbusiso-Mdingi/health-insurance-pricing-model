@@ -1,5 +1,6 @@
 library(shiny)
 library(splines)
+library(MASS)
 library(bslib)
 library(ggplot2)
 
@@ -11,27 +12,45 @@ freq_glm    <- readRDS("../models/freq_model.rds")
 sev_glm     <- readRDS("../models/sev_model.rds")
 percentiles <- readRDS("../models/portfolio_percentiles.rds")
 
+PROVINCES <- freq_glm$xlevels$Province
+PLANS <- freq_glm$xlevels$Plan
+
 # --------------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------------
 
-# Expected claims per policy year (Poisson GLM, exposure set to one year)
-predict_frequency <- function(df) {
+# Log-scale prediction per policy year and its standard error, from the
+# covariance matrix saved with the model (the delta method on the log link)
+predict_log <- function(model, df) {
   df$Exposure <- 1
-  predict(freq_glm, newdata = df, type = "response")
+  tt <- delete.response(terms(model))
+  mf <- model.frame(tt, df, xlev = model$xlevels)
+  X <- model.matrix(tt, mf, contrasts.arg = model$contrasts)
+  list(fit = drop(X %*% coef(model)), se = sqrt(rowSums((X %*% model$V) * X)))
 }
 
-# Expected cost per claim (Gamma GLM with a log link)
-predict_severity <- function(df) predict(sev_glm, newdata = df, type = "response")
-
-expected_premium <- function(df, loading = 0) {
-  predict_frequency(df) * predict_severity(df) * (1 + loading)
+# Expected claims per year (negative binomial GLM), cost per claim (Gamma
+# GLM) and expected annual cost with its 95% interval. The two models'
+# estimates are independent, so the log-scale variances add.
+price <- function(df) {
+  f <- predict_log(freq_glm, df)
+  s <- predict_log(sev_glm, df)
+  se <- sqrt(f$se^2 + s$se^2)
+  data.frame(
+    frequency = exp(f$fit),
+    severity = exp(s$fit),
+    pure = exp(f$fit + s$fit),
+    low = exp(f$fit + s$fit - qnorm(0.975) * se),
+    high = exp(f$fit + s$fit + qnorm(0.975) * se)
+  )
 }
 
-# Share of the holdout portfolio with a lower pure premium
-portfolio_percentile <- function(pure) {
-  approx(percentiles, seq(0, 100, by = 1), xout = pure, rule = 2, ties = "ordered")$y
+# Share of holdout members on the same plan with a lower pure premium
+plan_percentile <- function(pure, plan) {
+  approx(percentiles[[plan]], seq(0, 100, by = 1), xout = pure, rule = 2, ties = "ordered")$y
 }
+
+rand <- function(x) paste0("R ", format(round(x), big.mark = ","))
 
 # --------------------------------------------------
 # THEME
@@ -51,87 +70,85 @@ theme <- bs_theme(
 
 ui <- fluidPage(
   theme = theme,
-  
+
   fluidRow(
     column(
       12,
       h1("Health Insurance Pricing Dashboard",
          class = "text-center mt-4 mb-1"),
       p(
-        "Frequency and severity pricing model",
+        "Frequency and severity pricing model for a South African portfolio",
         class = "text-center text-muted mb-4"
       )
     )
   ),
-  
+
   fluidRow(
-    
+
     # -------- Inputs --------
     column(
       4,
-      
+
       card(
-        card_header("Policyholder characteristics"),
-        sliderInput("age", "Age", min = 18, max = 85, value = 30),
-        sliderInput("bmi", "BMI", min = 18, max = 45, value = 25, step = 0.1),
-        sliderInput("children", "Number of children", min = 0, max = 5, value = 0),
-        selectInput("sex", "Sex", choices = c("male", "female")),
+        card_header("Member characteristics"),
+        sliderInput("age", "Age", min = 18, max = 85, value = 45),
+        sliderInput("bmi", "BMI", min = 16, max = 50, value = 27.5, step = 0.1),
+        sliderInput("children", "Number of children", min = 0, max = 5, value = 1),
+        selectInput("sex", "Sex", choices = c("female", "male")),
         selectInput("smoker", "Smoking status", choices = c("no", "yes")),
-        selectInput(
-          "region",
-          "Region",
-          choices = c("southeast", "southwest", "northeast", "northwest")
-        )
+        selectInput("province", "Province", choices = PROVINCES),
+        selectInput("plan", "Plan", choices = PLANS, selected = "Saver")
       ),
-      
+
       card(
         card_header("Pricing assumptions"),
         sliderInput(
           "loading",
-          "Total loading (expenses and profit)",
+          "Loading for expenses",
           min = 0,
-          max = 1,
-          value = 0.30,
+          max = 0.4,
+          value = 0.15,
           step = 0.01
         )
       )
     ),
-    
+
     # -------- Outputs --------
     column(
       8,
-      
+
       card(
-        card_header("Indicative annual premium"),
+        card_header("Indicative monthly risk premium"),
         h2(
           textOutput("premium"),
           class = "text-center fw-bold"
         ),
-        uiOutput("risk_badge"),
-        p(
-          "Expected annual premium for one policy year, including loadings.",
-          class = "text-center text-muted"
-        )
+        p(textOutput("premium_detail"), class = "text-center text-muted mb-0"),
+        uiOutput("risk_badge")
       ),
-      
+
       card(
         card_header("Pricing breakdown"),
         tableOutput("breakdown")
       ),
-      
+
       card(
-        card_header("Premium by age, other factors held constant"),
+        card_header("Monthly premium by age, other factors held constant"),
         plotOutput("age_curve", height = "250px")
       )
     )
   ),
-  
+
   fluidRow(
     column(
       12,
       hr(),
       p(
-        "Synthetic data. Demonstration use only.",
+        paste(
+          "Synthetic data. Demonstration use only. South African medical schemes must charge",
+          "community rates, so this is the underlying risk cost, not a contribution a scheme",
+          "could charge."
+        ),
         class = "text-center text-muted"
       )
     )
@@ -143,37 +160,38 @@ ui <- fluidPage(
 # --------------------------------------------------
 
 server <- function(input, output, session) {
-  
-  user_data <- reactive({
+
+  member <- function(age = input$age) {
     data.frame(
-      Age = input$age,
+      Age = age,
       Sex = factor(input$sex, levels = c("female", "male")),
       BMI = input$bmi,
       Smoker = factor(input$smoker, levels = c("no", "yes")),
-      Region = factor(
-        input$region,
-        levels = c("northeast", "northwest", "southeast", "southwest")
-      ),
+      Province = factor(input$province, levels = PROVINCES),
+      Plan = factor(input$plan, levels = PLANS),
       Children = input$children
     )
-  })
-  
-  premium_val <- reactive({
-    expected_premium(user_data(), input$loading)
-  })
-  
+  }
+
+  quote <- reactive(price(member()))
+  monthly <- function(annual) annual * (1 + input$loading) / 12
+
   # -------- Premium Text --------
   output$premium <- renderText({
-    paste0(
-      "R ",
-      format(round(premium_val(), 2), big.mark = ",")
-    )
+    paste(rand(monthly(quote()$pure)), "a month")
   })
-  
+
+  output$premium_detail <- renderText({
+    q <- quote()
+    sprintf("%s a year. 95%% interval %s to %s a month.",
+            rand(q$pure * (1 + input$loading)), rand(monthly(q$low)), rand(monthly(q$high)))
+  })
+
   # -------- Risk Badge --------
-  # Risk class from the quartiles of the pure premium on the holdout portfolio
+  # Risk class from the quartiles of the pure premium among holdout members
+  # on the same plan
   output$risk_badge <- renderUI({
-    pct <- portfolio_percentile(expected_premium(user_data()))
+    pct <- plan_percentile(quote()$pure, input$plan)
     risk_class <- if (pct < 25) {
       list("Low risk", "success")
     } else if (pct < 50) {
@@ -189,50 +207,42 @@ server <- function(input, output, session) {
       tags$span(class = paste0("badge bg-", risk_class[[2]], " fs-6 mt-2"), risk_class[[1]]),
       tags$p(
         class = "text-muted mt-2 mb-0",
-        sprintf("Higher pure premium than %.0f%% of the portfolio", pct)
+        sprintf("Higher expected cost than %.0f%% of members on the %s plan", pct, input$plan)
       )
     )
   })
-  
+
   # -------- Breakdown --------
   output$breakdown <- renderTable({
-    freq <- predict_frequency(user_data())
-    sev  <- predict_severity(user_data())
-    pure <- freq * sev
-    
+    q <- quote()
     data.frame(
       Metric = c(
         "Expected claims per year",
         "Expected cost per claim",
-        "Pure premium",
-        "Final premium"
+        "Expected claims cost per year",
+        "Annual premium",
+        "Monthly premium"
       ),
       Value = c(
-        round(freq, 4),
-        round(sev, 2),
-        round(pure, 2),
-        round(premium_val(), 2)
+        format(round(q$frequency, 3), nsmall = 3),
+        rand(q$severity),
+        rand(q$pure),
+        rand(q$pure * (1 + input$loading)),
+        rand(monthly(q$pure))
       )
     )
   })
-  
+
   # -------- Age Curve --------
   output$age_curve <- renderPlot({
-    
-    age_df <- data.frame(
-      Age = 18:85,
-      Sex = input$sex,
-      BMI = input$bmi,
-      Smoker = input$smoker,
-      Region = input$region,
-      Children = input$children
-    )
-    
-    age_df$Premium <- expected_premium(age_df, input$loading)
-    
-    ggplot(age_df, aes(Age, Premium)) +
+
+    age_df <- cbind(data.frame(Age = 18:85), price(member(18:85)))
+
+    ggplot(age_df, aes(Age, monthly(pure))) +
+      geom_ribbon(aes(ymin = monthly(low), ymax = monthly(high)), fill = "#e0a449", alpha = 0.25) +
       geom_line(color = "#e0a449", linewidth = 1.2) +
       geom_vline(xintercept = input$age, linetype = "dashed", alpha = 0.6) +
+      scale_y_continuous(labels = rand, limits = c(0, NA)) +
       theme_minimal(base_size = 12) +
       theme(
         plot.background = element_rect(fill = "transparent", color = NA),
@@ -242,7 +252,7 @@ server <- function(input, output, session) {
       ) +
       labs(
         x = "Age",
-        y = "Annual premium"
+        y = "Monthly premium"
       )
   })
 }

@@ -1,32 +1,31 @@
 # --------------------------------------------------
 # Model Training and Validation for Health Insurance Pricing
 # --------------------------------------------------
-# Fits a Poisson GLM for claim frequency (per policy year, with an
-# exposure offset) and a Gamma GLM for claim severity (average cost per
-# claim, weighted by claim count) on 80% of the synthetic portfolio, then
-# checks both on the 20% holdout and against the true parameters used to
-# generate the data.
+# Compares candidate frequency and severity models on 80% of the synthetic
+# portfolio, selects the final models by nested tests, then checks them on
+# the 20% holdout and against the true parameters used to generate the
+# data. The final models are a negative binomial GLM for claim frequency
+# (per policy year, with an exposure offset) and a Gamma GLM for claim
+# severity (average cost per claim, weighted by claim count).
 #
 # Outputs:
-#   models/freq_model.rds, models/sev_model.rds   fitted models
-#   models/portfolio_percentiles.rds              holdout pure premium percentiles
-#   reports/validation.md                         holdout results
+#   models/freq_model.rds, models/sev_model.rds   fitted models, with vcov
+#   models/portfolio_percentiles.rds              holdout pure premium percentiles by plan
+#   reports/validation.md                         comparison and holdout results
 #   dashboard/src/model.json                      model export for the dashboard
 #   dashboard/test/parity-cases.json              R predictions for the parity test
 #
 # Run from the project root: Rscript scripts/model_training.R
 # --------------------------------------------------
 
-library(splines)
-library(jsonlite)
+suppressPackageStartupMessages({
+  library(jsonlite)
+  library(statmod)
+})
+source("scripts/simulate.R")
+source("scripts/models.R")
 
-insurance_data <- read.csv("data/synthetic_health_insurance_data.csv")
-insurance_data$Sex <- factor(insurance_data$Sex, levels = c("female", "male"))
-insurance_data$Smoker <- factor(insurance_data$Smoker, levels = c("no", "yes"))
-insurance_data$Region <- factor(
-  insurance_data$Region,
-  levels = c("northeast", "northwest", "southeast", "southwest")
-)
+insurance_data <- set_levels(read.csv("data/synthetic_health_insurance_data.csv"))
 
 # --------------------------------------------------
 # TRAIN / HOLDOUT SPLIT
@@ -36,62 +35,164 @@ set.seed(2026)
 is_train <- runif(nrow(insurance_data)) < 0.8
 train <- insurance_data[is_train, ]
 test <- insurance_data[!is_train, ]
+test_claims <- claims_only(test)
+
+per_year <- function(df) transform(df, Exposure = 1)
 
 # --------------------------------------------------
-# FREQUENCY MODEL (Poisson, log link, exposure offset)
+# HOLDOUT METRICS
 # --------------------------------------------------
 
-freq_model <- glm(
-  ClaimCount ~ ns(Age, df = 4) + ns(BMI, df = 4) + Sex + Smoker + Children + Region +
-    offset(log(Exposure)),
-  data = train,
-  family = poisson(link = "log")
+pois_dev <- function(y, mu) 2 * sum(ifelse(y > 0, y * log(y / mu), 0) - (y - mu))
+gamma_dev <- function(y, mu, w) 2 * sum(w * (-log(y / mu) + (y - mu) / mu))
+tweedie_dev <- function(y, mu, w, p = 1.6) {
+  2 * sum(w * (y^(2 - p) / ((1 - p) * (2 - p)) - y * mu^(1 - p) / (1 - p) + mu^(2 - p) / (2 - p)))
+}
+
+# Deviance explained on the holdout, against a model with no rating
+# factors fitted on the training set.
+freq_null <- sum(train$ClaimCount) / sum(train$Exposure)
+sev_null <- sum(train$Charges) / sum(train$ClaimCount)
+cost_null <- sum(train$Charges) / sum(train$Exposure)
+
+freq_dev_explained <- function(rate) {
+  1 - pois_dev(test$ClaimCount, rate * test$Exposure) /
+    pois_dev(test$ClaimCount, freq_null * test$Exposure)
+}
+sev_dev_explained <- function(mu) {
+  1 - gamma_dev(test_claims$AvgCost, mu, test_claims$ClaimCount) /
+    gamma_dev(test_claims$AvgCost, sev_null, test_claims$ClaimCount)
+}
+cost_dev_explained <- function(rate) {
+  y <- test$Charges / test$Exposure
+  1 - tweedie_dev(y, rate, test$Exposure) / tweedie_dev(y, cost_null, test$Exposure)
+}
+
+# Weighted Lorenz curve and Gini: units sorted from lowest to highest score,
+# cumulative share of weight against cumulative share of the actual outcome.
+lorenz <- function(score, weight, actual) {
+  o <- order(score)
+  x <- c(0, cumsum(weight[o]) / sum(weight))
+  y <- c(0, cumsum(actual[o]) / sum(actual))
+  list(x = x, y = y, gini = 1 - 2 * sum(diff(x) * (head(y, -1) + tail(y, -1)) / 2))
+}
+gini_freq <- function(rate) lorenz(rate, test$Exposure, test$ClaimCount)$gini
+gini_sev <- function(mu) lorenz(mu, test_claims$ClaimCount, test_claims$Charges)$gini
+gini_cost <- function(rate) lorenz(rate, test$Exposure, test$Charges)$gini
+
+# --------------------------------------------------
+# MODEL COMPARISON
+# --------------------------------------------------
+
+freq_fits <- lapply(FREQ_CANDIDATES, function(rhs) {
+  list(poisson = fit_poisson(rhs, train), negbin = fit_negbin(rhs, train))
+})
+sev_fits <- lapply(SEV_CANDIDATES, fit_gamma, data = train)
+
+freq_comparison <- do.call(c, lapply(names(freq_fits), function(nm) {
+  lapply(c("poisson", "negbin"), function(fam) {
+    m <- freq_fits[[nm]][[fam]]
+    rate <- predict(m, per_year(test), type = "response")
+    list(
+      model = nm, family = fam, rhs = FREQ_CANDIDATES[[nm]],
+      parameters = length(coef(m)) + (fam == "negbin"),
+      aic = AIC(m),
+      deviance_explained = freq_dev_explained(rate),
+      gini = gini_freq(rate)
+    )
+  })
+}))
+
+sev_comparison <- lapply(names(sev_fits), function(nm) {
+  m <- sev_fits[[nm]]
+  mu <- predict(m, test_claims, type = "response")
+  list(
+    model = nm, rhs = SEV_CANDIDATES[[nm]], parameters = length(coef(m)),
+    aic = AIC(m), dispersion = pearson_dispersion(m),
+    deviance_explained = sev_dev_explained(mu), gini = gini_sev(mu)
+  )
+})
+
+# Nested tests on the training set, at the 5% level: likelihood ratio
+# tests for the negative binomial models, and F tests using the estimated
+# dispersion for the Gamma models. The Gamma likelihood (and so its AIC)
+# assumes Gamma distributed claims, which these heavier tailed claims are
+# not; the F test only relies on the variance being proportional to the
+# mean squared.
+nb_tests <- anova(freq_fits$F1$negbin, freq_fits$F2$negbin, freq_fits$F3$negbin)
+sev_tests <- anova(sev_fits$S1, sev_fits$S2, sev_fits$S3, test = "F")
+nested_tests <- list(
+  frequency = list(
+    list(from = "F1", to = "F2", statistic = nb_tests$`LR stat.`[2], df = nb_tests$`   df`[2], p = nb_tests$`Pr(Chi)`[2]),
+    list(from = "F2", to = "F3", statistic = nb_tests$`LR stat.`[3], df = nb_tests$`   df`[3], p = nb_tests$`Pr(Chi)`[3])
+  ),
+  severity = list(
+    list(from = "S1", to = "S2", statistic = sev_tests$F[2], df = sev_tests$Df[2], p = sev_tests$`Pr(>F)`[2]),
+    list(from = "S2", to = "S3", statistic = sev_tests$F[3], df = sev_tests$Df[3], p = sev_tests$`Pr(>F)`[3])
+  )
+)
+pick <- function(tests, first) {
+  chosen <- first
+  for (t in tests) if (t$from == chosen && t$p < 0.05) chosen <- t$to
+  chosen
+}
+stopifnot(
+  pick(nested_tests$frequency, "F1") == FINAL_FREQ,
+  pick(nested_tests$severity, "S1") == FINAL_SEV
 )
 
-freq_dispersion <- sum(residuals(freq_model, type = "pearson")^2) / freq_model$df.residual
+# Degrees of freedom for F3's age spline, by AIC on the training set.
+age_df_search <- lapply(c(6, 8, 10, 12), function(k) {
+  m <- fit_negbin(f3_rhs(k), train)
+  list(df = k, aic = AIC(m))
+})
+stopifnot(age_df_search[[which.min(vapply(age_df_search, `[[`, 0, "aic"))]]$df == F3_AGE_DF)
 
-# --------------------------------------------------
-# SEVERITY MODEL (Gamma, log link, per claim)
-# --------------------------------------------------
-# The response is the average cost per claim on policies with at least one
-# claim. Weighting by claim count makes this equivalent to fitting each
-# claim separately, because the variance of an average of k claims is the
-# per-claim variance divided by k.
-
-sev_train <- train[train$ClaimCount > 0, ]
-sev_train$AvgCost <- sev_train$Charges / sev_train$ClaimCount
-
-sev_model <- glm(
-  AvgCost ~ ns(Age, df = 4) + ns(BMI, df = 4) + Sex + Smoker + Children + Region,
-  data = sev_train,
-  family = Gamma(link = "log"),
-  weights = ClaimCount
+# A single Tweedie GLM on cost per policy year, as an alternative to the
+# frequency-severity split. The variance power is fixed at 1.6.
+tweedie_model <- glm(
+  as.formula(paste("I(Charges / Exposure) ~", FREQ_CANDIDATES[[FINAL_FREQ]])),
+  data = train, weights = Exposure,
+  family = tweedie(var.power = 1.6, link.power = 0),
+  control = glm.control(maxit = 100)
 )
 
+pure_rate <- function(f, s) {
+  predict(f, per_year(test), type = "response") * predict(s, test, type = "response")
+}
+pure_candidates <- list(
+  list(model = "F1 x S1, linear", rate = pure_rate(freq_fits$F1$negbin, sev_fits$S1)),
+  list(model = "F2 x S2, splines", rate = pure_rate(freq_fits$F2$negbin, sev_fits$S2)),
+  list(model = "F3 x S2, final", rate = pure_rate(freq_fits$F3$negbin, sev_fits$S2)),
+  list(model = "F3 x S3", rate = pure_rate(freq_fits$F3$negbin, sev_fits$S3)),
+  list(model = "Tweedie GLM, F3 terms", rate = predict(tweedie_model, test, type = "response")),
+  list(model = "True model", rate = true_frequency(test) * true_severity(test))
+)
+pure_comparison <- lapply(pure_candidates, function(p) {
+  list(
+    model = p$model,
+    deviance_explained = cost_dev_explained(p$rate),
+    gini = gini_cost(p$rate),
+    cost_ae = sum(test$Charges) / sum(p$rate * test$Exposure)
+  )
+})
+
+# --------------------------------------------------
+# FINAL MODELS
+# --------------------------------------------------
+
+freq_model <- freq_fits[[FINAL_FREQ]]$negbin
+poisson_model <- freq_fits[[FINAL_FREQ]]$poisson
+sev_model <- sev_fits[[FINAL_SEV]]
+
+poisson_dispersion <- pearson_dispersion(poisson_model)
 sev_dispersion <- summary(sev_model)$dispersion
+V_freq <- vcov(freq_model)
+V_sev <- vcov(sev_model)
 
-# --------------------------------------------------
-# PREDICTION
-# --------------------------------------------------
-
-predict_frequency <- function(df) {
-  df$Exposure <- 1
-  predict(freq_model, newdata = df, type = "response")
-}
-predict_severity <- function(df) predict(sev_model, newdata = df, type = "response")
+predict_frequency <- function(df) predict(freq_model, per_year(df), type = "response")
+predict_severity <- function(df) predict(sev_model, df, type = "response")
 predict_pure <- function(df) predict_frequency(df) * predict_severity(df)
-
-# True expected cost per policy year under the generating model. BMI is
-# rounded to one decimal in the data, so this is very slightly different
-# from the values used to simulate.
-true_frequency <- function(df) {
-  exp(-2.5 + 0.015 * df$Age + 0.03 * (df$BMI - 25) + 0.6 * (df$Smoker == "yes") +
-        0.08 * df$Children + 0.2 * (df$Region == "southeast"))
-}
-true_severity <- function(df) {
-  exp(8 + 0.01 * df$Age + 0.02 * (df$BMI - 25) + 0.5 * (df$Smoker == "yes") +
-        0.1 * df$Children + 0.5 * 0.8^2)
-}
 
 # --------------------------------------------------
 # HOLDOUT VALIDATION
@@ -103,33 +204,36 @@ test$pred_cost <- test$pred_rate * test$Exposure
 test$true_cost <- test$true_rate * test$Exposure
 test$pred_claims <- predict_frequency(test) * test$Exposure
 
+lorenz_model <- lorenz(test$pred_rate, test$Exposure, test$Charges)
+lorenz_true <- lorenz(test$true_rate, test$Exposure, test$Charges)
+
 holdout <- list(
   policies = nrow(test),
   exposure = sum(test$Exposure),
   claims = sum(test$ClaimCount),
   claims_ae = sum(test$ClaimCount) / sum(test$pred_claims),
   cost_ae = sum(test$Charges) / sum(test$pred_cost),
-  freq_deviance_explained = NA_real_
+  freq_deviance_explained = freq_dev_explained(predict_frequency(test)),
+  sev_deviance_explained = sev_dev_explained(predict_severity(test_claims)),
+  cost_deviance_explained = cost_dev_explained(test$pred_rate),
+  gini_model = lorenz_model$gini,
+  gini_true = lorenz_true$gini
 )
 
-# Poisson deviance explained on the holdout, against an exposure-only model.
-pois_dev <- function(y, mu) 2 * sum(ifelse(y > 0, y * log(y / mu), 0) - (y - mu))
-null_mu <- test$Exposure * sum(train$ClaimCount) / sum(train$Exposure)
-holdout$freq_deviance_explained <-
-  1 - pois_dev(test$ClaimCount, test$pred_claims) / pois_dev(test$ClaimCount, null_mu)
-
-# Exposure-weighted Lorenz curve and Gini: policies sorted from lowest to
-# highest predicted cost per policy year, against their share of actual cost.
-lorenz <- function(score) {
-  o <- order(score)
-  x <- c(0, cumsum(test$Exposure[o]) / sum(test$Exposure))
-  y <- c(0, cumsum(test$Charges[o]) / sum(test$Charges))
-  list(x = x, y = y, gini = 1 - 2 * sum(diff(x) * (head(y, -1) + tail(y, -1)) / 2))
+# Actual over expected by plan and by province.
+ae_by <- function(var) {
+  lapply(levels(test[[var]]), function(l) {
+    rows <- test[[var]] == l
+    list(
+      level = l,
+      exposure = sum(test$Exposure[rows]),
+      claims_ae = sum(test$ClaimCount[rows]) / sum(test$pred_claims[rows]),
+      cost_ae = sum(test$Charges[rows]) / sum(test$pred_cost[rows])
+    )
+  })
 }
-lorenz_model <- lorenz(test$pred_rate)
-lorenz_true <- lorenz(test$true_rate)
-holdout$gini_model <- lorenz_model$gini
-holdout$gini_true <- lorenz_true$gini
+ae_plan <- ae_by("Plan")
+ae_province <- ae_by("Province")
 
 # Lift: ten bands of equal exposure by predicted cost per policy year.
 o <- order(test$pred_rate)
@@ -150,93 +254,124 @@ lift <- lapply(1:10, function(b) {
 # --------------------------------------------------
 # RELATIVITIES AGAINST THE TRUE PARAMETERS
 # --------------------------------------------------
-# The base profile is the reference level of every factor: age 40, BMI 25,
-# female, non-smoker, northeast, no children.
+# The base profile is the reference level of every factor: a 40-year-old
+# woman in Gauteng on a hospital plan, non-smoker, BMI 25, no children.
+# Sex is compared for severity only: its frequency effect depends on age
+# through the interaction, and is shown as a curve instead.
 
 base <- data.frame(Age = 40, BMI = 25, Sex = "female", Smoker = "no",
-                   Region = "northeast", Children = 0)
+                   Province = "Gauteng", Plan = "Hospital", Children = 0, Exposure = 1)
+base <- set_levels(base)
 
-factor_rows <- list(
-  list(factor = "Sex", level = "male", term = "Sexmale",
-       true_freq = 1, true_sev = 1),
-  list(factor = "Smoker", level = "yes", term = "Smokeryes",
-       true_freq = exp(0.6), true_sev = exp(0.5)),
-  list(factor = "Children", level = "each child", term = "Children",
-       true_freq = exp(0.08), true_sev = exp(0.1)),
-  list(factor = "Region", level = "northwest", term = "Regionnorthwest",
-       true_freq = 1, true_sev = 1),
-  list(factor = "Region", level = "southeast", term = "Regionsoutheast",
-       true_freq = exp(0.2), true_sev = 1),
-  list(factor = "Region", level = "southwest", term = "Regionsouthwest",
-       true_freq = 1, true_sev = 1)
+factor_rows <- c(
+  list(
+    list(factor = "Smoker", level = "yes", term = "Smokeryes",
+         true_freq = exp(TRUTH$freq_smoker), true_sev = exp(TRUTH$sev_smoker)),
+    list(factor = "Children", level = "each child", term = "Children",
+         true_freq = exp(TRUTH$freq_child), true_sev = exp(TRUTH$sev_child)),
+    list(factor = "Sex", level = "male", term = "Sexmale", freq = FALSE,
+         true_freq = NA, true_sev = exp(TRUTH$sev_male))
+  ),
+  lapply(2:length(PLANS), function(i) {
+    list(factor = "Plan", level = PLANS[i], term = paste0("Plan", PLANS[i]),
+         true_freq = exp(TRUTH$freq_plan[i]), true_sev = exp(TRUTH$sev_plan[i]))
+  }),
+  lapply(2:length(PROVINCES), function(i) {
+    list(factor = "Province", level = PROVINCES[i], term = paste0("Province", PROVINCES[i]),
+         true_freq = exp(TRUTH$freq_province[i]), true_sev = exp(TRUTH$sev_province[i]))
+  })
 )
 
-relativity <- function(model, term) {
+relativity <- function(model, V, term) {
   est <- coef(model)[[term]]
-  se <- sqrt(vcov(model)[term, term])
-  c(est = exp(est), lo = exp(est - 1.96 * se), hi = exp(est + 1.96 * se))
+  se <- sqrt(V[term, term])
+  list(est = exp(est), lo = exp(est - 1.96 * se), hi = exp(est + 1.96 * se))
 }
 
 factors <- lapply(factor_rows, function(r) {
-  f <- relativity(freq_model, r$term)
-  s <- relativity(sev_model, r$term)
+  f <- if (isFALSE(r$freq)) list(est = NA, lo = NA, hi = NA) else relativity(freq_model, V_freq, r$term)
+  s <- relativity(sev_model, V_sev, r$term)
   list(
     factor = r$factor, level = r$level,
-    freq = unname(f["est"]), freq_lo = unname(f["lo"]), freq_hi = unname(f["hi"]),
-    sev = unname(s["est"]), sev_lo = unname(s["lo"]), sev_hi = unname(s["hi"]),
+    freq = f$est, freq_lo = f$lo, freq_hi = f$hi,
+    sev = s$est, sev_lo = s$lo, sev_hi = s$hi,
     true_freq = r$true_freq, true_sev = r$true_sev
   )
 })
+covered <- function(lo, hi, truth) !is.na(truth) & lo <= truth & truth <= hi
+intervals_covered <- sum(vapply(factors, function(f) {
+  covered(f$freq_lo, f$freq_hi, f$true_freq) + covered(f$sev_lo, f$sev_hi, f$true_sev)
+}, 0))
+intervals_total <- sum(vapply(factors, function(f) (!is.na(f$true_freq)) + 1, 0))
 
 # --------------------------------------------------
 # EXPORT FOR THE DASHBOARD
 # --------------------------------------------------
-# Both models are additive on the log scale, so a prediction is the base
-# log value plus one term per rating factor. Age and BMI are exported as
-# tables of their spline terms at every value the dashboard accepts
-# (whole years 18 to 85, BMI 18.0 to 45.0 in steps of 0.1), which makes
-# the dashboard's predictions identical to R's.
+# The dashboard rebuilds each model's design row from the coefficient
+# names: the intercept, factor indicators, Children, and spline columns
+# looked up in basis tables, with ":" marking an interaction (a product of
+# columns). The basis tables hold every value the dashboard accepts (whole
+# years 18 to 85, BMI 16.0 to 50.0 in steps of 0.1), so its predictions
+# and standard errors match R's.
 
 ages <- 18:85
-bmis <- round(seq(18, 45, by = 0.1), 1)
+bmis <- round(seq(16, 50, by = 0.1), 1)
 
-term_table <- function(predict_fn, var, values) {
-  grid <- base[rep(1, length(values)), ]
-  grid[[var]] <- values
-  log(predict_fn(grid)) - log(predict_fn(base))
+grid_of <- function(var, values, sex = "female") {
+  g <- base[rep(1, length(values)), ]
+  g[[var]] <- values
+  g$Sex <- factor(sex, levels = levels(base$Sex))
+  g
 }
 
-export_model <- function(predict_fn, model, dispersion) {
-  cf <- coef(model)
-  list(
-    base = log(predict_fn(base)),
-    age = term_table(predict_fn, "Age", ages),
-    bmi = term_table(predict_fn, "BMI", bmis),
-    sex = list(female = 0, male = cf[["Sexmale"]]),
-    smoker = list(no = 0, yes = cf[["Smokeryes"]]),
-    children = cf[["Children"]],
-    region = list(
-      northeast = 0,
-      northwest = cf[["Regionnorthwest"]],
-      southeast = cf[["Regionsoutheast"]],
-      southwest = cf[["Regionsouthwest"]]
+# Columns of the model matrix that are spline basis functions of one
+# variable (main effects only), tabulated on that variable's grid.
+basis_table <- function(model, var, values) {
+  X <- design(model, grid_of(var, values))
+  cols <- grep(paste0("^ns\\(", var, ","), colnames(X), value = TRUE)
+  cols <- cols[!grepl(":", cols)]
+  lapply(setNames(cols, cols), function(c) unname(X[, c]))
+}
+
+export_model <- function(model, V, family, extra = list()) {
+  c(
+    list(
+      family = family,
+      formula = paste(deparse(formula(model), width.cutoff = 500), collapse = ""),
+      terms = names(coef(model)),
+      coef = unname(coef(model)),
+      vcov = unname(V),
+      age_basis = basis_table(model, "Age", ages),
+      bmi_basis = basis_table(model, "BMI", bmis)
     ),
-    dispersion = dispersion
+    extra
   )
 }
 
-true_curve <- function(var, values) {
-  grid <- base[rep(1, length(values)), ]
-  grid[[var]] <- values
-  list(
-    freq = log(true_frequency(grid)) - log(true_frequency(base)),
-    sev = log(true_severity(grid)) - log(true_severity(base))
-  )
+# Fitted log relativity against the base profile along one variable, with
+# its standard error, and the true log relativity.
+curve <- function(var, values, sex = "female") {
+  g <- grid_of(var, values, sex)
+  side <- function(model, V, truth) {
+    dX <- sweep(design(model, g), 2, drop(design(model, base)))
+    list(
+      fit = unname(drop(dX %*% coef(model))),
+      se = unname(sqrt(rowSums((dX %*% V) * dX))),
+      true = unname(log(truth(g)) - log(truth(base)))
+    )
+  }
+  list(freq = side(freq_model, V_freq, true_frequency),
+       sev = side(sev_model, V_sev, true_severity))
 }
 
-# Portfolio distribution of the annual pure premium on the holdout, used to
-# place a quoted profile in the portfolio and to set the risk classes.
-percentiles <- unname(quantile(test$pred_rate, probs = seq(0, 1, by = 0.01)))
+# Holdout distribution of the annual pure premium within each plan, used
+# to place a quoted profile among members on the same plan and to set the
+# risk classes. Across plans the premium mostly reflects the benefits
+# bought, so a portfolio-wide ranking would say little about risk.
+percentiles_by_plan <- lapply(setNames(PLANS, PLANS), function(p) {
+  rate <- test$pred_rate[test$Plan == p]
+  list(percentiles = unname(quantile(rate, probs = seq(0, 1, by = 0.01))), mean = mean(rate))
+})
 
 thin <- function(l, k = 200) {
   i <- unique(round(seq(1, length(l$x), length.out = k)))
@@ -245,31 +380,54 @@ thin <- function(l, k = 200) {
 
 export <- list(
   generated = format(Sys.Date()),
+  provinces = PROVINCES,
+  plans = PLANS,
   ranges = list(age = range(ages), bmi = range(bmis), children = c(0, 5)),
-  base_profile = as.list(base),
-  frequency = export_model(predict_frequency, freq_model, freq_dispersion),
-  severity = export_model(predict_severity, sev_model, sev_dispersion),
-  true_curves = list(age = true_curve("Age", ages), bmi = true_curve("BMI", bmis)),
+  base_profile = lapply(as.list(base[, setdiff(names(base), "Exposure")]), function(v) {
+    if (is.factor(v)) as.character(v) else v
+  }),
+  frequency = export_model(freq_model, V_freq, "negative binomial", list(
+    theta = freq_model$theta, theta_se = freq_model$SE.theta,
+    theta_true = 1 / TRUTH$frailty_var, poisson_dispersion = poisson_dispersion
+  )),
+  severity = export_model(sev_model, V_sev, "Gamma", list(
+    dispersion = sev_dispersion, dispersion_true = z_cv2()
+  )),
+  curves = list(
+    age = list(female = curve("Age", ages, "female"), male = curve("Age", ages, "male")),
+    bmi = curve("BMI", bmis)
+  ),
   factors = factors,
-  portfolio = list(
-    percentiles = percentiles,
-    mean = mean(test$pred_rate)
+  portfolio = percentiles_by_plan,
+  comparison = list(
+    frequency = freq_comparison,
+    severity = sev_comparison,
+    pure = pure_comparison,
+    nested_tests = nested_tests,
+    age_df_search = age_df_search,
+    final = list(frequency = FINAL_FREQ, severity = FINAL_SEV)
   ),
   validation = list(
     train_policies = nrow(train),
+    train_exposure = sum(train$Exposure),
     train_claims = sum(train$ClaimCount),
     holdout = holdout,
+    ae_plan = ae_plan,
+    ae_province = ae_province,
     lift = lift,
     lorenz_model = thin(lorenz_model),
-    lorenz_true = thin(lorenz_true)
+    lorenz_true = thin(lorenz_true),
+    intervals_covered = intervals_covered,
+    intervals_total = intervals_total
   )
 )
 
 dir.create("dashboard/src", recursive = TRUE, showWarnings = FALSE)
 dir.create("dashboard/test", recursive = TRUE, showWarnings = FALSE)
-write_json(export, "dashboard/src/model.json", auto_unbox = TRUE, digits = NA)
+write_json(export, "dashboard/src/model.json", auto_unbox = TRUE, digits = NA, na = "null")
 
-# R predictions on random profiles, for the dashboard's parity test.
+# R predictions and standard errors on random profiles, for the
+# dashboard's parity test.
 set.seed(7)
 k <- 300
 cases <- data.frame(
@@ -277,51 +435,156 @@ cases <- data.frame(
   BMI = sample(bmis, k, replace = TRUE),
   Sex = sample(levels(insurance_data$Sex), k, replace = TRUE),
   Smoker = sample(levels(insurance_data$Smoker), k, replace = TRUE),
-  Region = sample(levels(insurance_data$Region), k, replace = TRUE),
-  Children = sample(0:5, k, replace = TRUE)
+  Province = sample(PROVINCES, k, replace = TRUE),
+  Plan = sample(PLANS, k, replace = TRUE),
+  Children = sample(0:5, k, replace = TRUE),
+  Exposure = 1
 )
+lf <- predict_log(freq_model, cases, V_freq)
+ls <- predict_log(sev_model, cases, V_sev)
 cases$frequency <- predict_frequency(cases)
 cases$severity <- predict_severity(cases)
 cases$pure <- cases$frequency * cases$severity
+cases$se_frequency <- lf$se
+cases$se_severity <- ls$se
+cases$Exposure <- NULL
+stopifnot(max(abs(exp(lf$fit + ls$fit) / cases$pure - 1)) < 1e-12)
 write_json(cases, "dashboard/test/parity-cases.json", digits = NA)
 
 # --------------------------------------------------
 # SAVE MODELS
 # --------------------------------------------------
 # Drop the training data and per-row fitted values; prediction only needs
-# the formula, the spline knots and the coefficients.
+# the formula, the spline knots and the coefficients. The covariance
+# matrix is kept as $V, because vcov() needs the QR decomposition dropped
+# here.
 
-strip <- function(m) {
+strip <- function(m, V) {
   m[c("data", "model", "y", "residuals", "fitted.values", "effects", "weights",
       "prior.weights", "linear.predictors", "offset")] <- NULL
   m$qr <- list(pivot = m$qr$pivot, rank = m$qr$rank)
   class(m$qr) <- "qr"
+  m$V <- V
   attr(m$terms, ".Environment") <- globalenv()
   m
 }
 dir.create("models", showWarnings = FALSE)
-saveRDS(strip(freq_model), "models/freq_model.rds")
-saveRDS(strip(sev_model), "models/sev_model.rds")
-saveRDS(percentiles, "models/portfolio_percentiles.rds")
+saveRDS(strip(freq_model, V_freq), "models/freq_model.rds")
+saveRDS(strip(sev_model, V_sev), "models/sev_model.rds")
+saveRDS(lapply(percentiles_by_plan, `[[`, "percentiles"), "models/portfolio_percentiles.rds")
 
 # --------------------------------------------------
 # VALIDATION REPORT
 # --------------------------------------------------
 
-fmt <- function(x, d = 3) formatC(x, format = "f", digits = d, big.mark = ",")
+fmt <- function(x, d = 3) ifelse(is.na(x), "", formatC(x, format = "f", digits = d, big.mark = ","))
+fmt_p <- function(p) if (p < 0.001) "< 0.001" else fmt(p)
+pct <- function(x) paste0(fmt(100 * x, 1), "%")
+row <- function(...) paste("|", paste(..., sep = " | "), "|")
+
+# Coverage tables from scripts/coverage_study.R, when it has been run.
+coverage_lines <- if (file.exists("dashboard/src/coverage.json")) {
+  cov <- fromJSON("dashboard/src/coverage.json", simplifyVector = FALSE)
+  premium <- Filter(function(m) startsWith(m$model, "Premium, negative binomial"), cov$models)[[1]]
+  c("## Interval coverage", "",
+    sprintf(paste(
+      "From `scripts/coverage_study.R`: %d portfolios of %s policies simulated from the true",
+      "model and refitted, counting how often the 95%% intervals contain the true value (Monte",
+      "Carlo standard error %s points). SE ratio is the mean standard error over the spread of",
+      "the estimates; 1 means the standard errors are the right size. Details in",
+      "`reports/coverage.md`."), cov$reps, format(cov$policies, big.mark = ","), fmt(100 * cov$monte_carlo_se, 1)),
+    "",
+    "| Intervals | Coverage | Mean SE ratio |",
+    "| --- | --- | --- |",
+    vapply(cov$models, function(m) row(m$model, pct(m$overall$coverage), fmt(m$overall$se_ratio, 2)), ""),
+    "",
+    "Premium intervals (negative binomial x Gamma) for six fixed profiles:",
+    "",
+    "| Profile | Coverage | Bias (log) |",
+    "| --- | --- | --- |",
+    vapply(premium$rows, function(r) row(r$target, pct(r$coverage), fmt(r$bias, 4)), ""),
+    "")
+} else character(0)
+
 lines <- c(
   "# Validation results",
   "",
   "Written by `scripts/model_training.R`. The models are fitted on a random 80% of the",
   "synthetic portfolio and checked on the remaining 20%. Because the data is synthetic,",
-  "the fitted effects can also be compared with the true parameters used to generate it.",
+  "the fitted effects can also be compared with the true parameters in `scripts/simulate.R`.",
+  "",
+  "## Model comparison",
+  "",
+  "Candidate rating structures. Every candidate also includes Smoker, Children, Province",
+  "and Plan.",
+  "",
+  "| Name | Age, BMI and sex terms |",
+  "| --- | --- |",
+  row("F1, S1", "linear Age and BMI, Sex"),
+  row("F2, S2", "ns(Age, 4), ns(BMI, 4), Sex"),
+  row("F3", sprintf("ns(Age, %d) x Sex interaction, ns(BMI, 4)", F3_AGE_DF)),
+  row("S3", "ns(Age, 4) x Sex interaction, ns(BMI, 4)"),
+  "",
+  "### Frequency",
+  "",
+  "Training AIC, and holdout Poisson deviance explained and Gini of claim counts.",
+  "",
+  "| Model | Family | Parameters | AIC | Deviance explained | Gini |",
+  "| --- | --- | --- | --- | --- | --- |",
+  vapply(freq_comparison, function(r) row(r$model, r$family, r$parameters, fmt(r$aic, 0),
+                                          pct(r$deviance_explained), fmt(r$gini)), ""),
+  "",
+  sprintf(paste(
+    "The Poisson %s model has a Pearson dispersion of %s, so the claim counts are",
+    "overdispersed and Poisson standard errors are too small. The negative binomial",
+    "estimates theta = %s (standard error %s), against a true value of %s."),
+    FINAL_FREQ, fmt(poisson_dispersion), fmt(freq_model$theta), fmt(freq_model$SE.theta),
+    fmt(1 / TRUTH$frailty_var)),
+  "",
+  "### Severity",
+  "",
+  "Gamma GLMs. Training AIC and dispersion, and holdout Gamma deviance explained and Gini",
+  "of claim cost by predicted cost per claim.",
+  "",
+  "| Model | Parameters | AIC | Dispersion | Deviance explained | Gini |",
+  "| --- | --- | --- | --- | --- | --- |",
+  vapply(sev_comparison, function(r) row(r$model, r$parameters, fmt(r$aic, 0), fmt(r$dispersion),
+                                         pct(r$deviance_explained), fmt(r$gini)), ""),
+  "",
+  "### Selection",
+  "",
+  "Nested tests on the training set, adding terms only at the 5% level: likelihood ratio",
+  "tests for the negative binomial models, and F tests with the estimated dispersion for the",
+  "Gamma models (the Gamma AIC assumes Gamma distributed claims, which these are not).",
+  "",
+  "| Test | Statistic | df | p-value |",
+  "| --- | --- | --- | --- |",
+  vapply(nested_tests$frequency, function(t) row(paste(t$from, "to", t$to, "(LR)"), fmt(t$statistic, 1), t$df, fmt_p(t$p)), ""),
+  vapply(nested_tests$severity, function(t) row(paste(t$from, "to", t$to, "(F)"), fmt(t$statistic, 2), t$df, fmt_p(t$p)), ""),
+  "",
+  sprintf(paste(
+    "The degrees of freedom of F3's age spline are chosen by AIC (negative binomial, training",
+    "set): %s. A first version with 6 degrees of freedom smoothed away the maternity peak in",
+    "women's claim frequency, and the coverage study showed it: premium intervals for women aged",
+    "31 and 40 contained the true value only 77%% to 80%% of the time."),
+    paste(vapply(age_df_search, function(a) sprintf("%d df %s", a$df, fmt(a$aic, 1)), ""), collapse = ", ")),
+  "",
+  sprintf("Final models: %s negative binomial for frequency and %s Gamma for severity.", FINAL_FREQ, FINAL_SEV),
+  "",
+  "### Pure premium",
+  "",
+  "Holdout cost per policy year. Deviance explained uses the Tweedie deviance with power 1.6.",
+  "",
+  "| Model | Deviance explained | Gini | Actual over expected |",
+  "| --- | --- | --- | --- |",
+  vapply(pure_comparison, function(r) row(r$model, pct(r$deviance_explained), fmt(r$gini), fmt(r$cost_ae)), ""),
   "",
   "## Fit",
   "",
-  sprintf("- Training set: %s policies, %s claims.", fmt(nrow(train), 0), fmt(sum(train$ClaimCount), 0)),
-  sprintf("- Frequency model Pearson dispersion: %s (1 means no overdispersion).", fmt(freq_dispersion)),
-  sprintf("- Severity model Gamma dispersion: %s (the true lognormal severity has a squared coefficient of variation of %s).",
-          fmt(sev_dispersion), fmt(exp(0.8^2) - 1)),
+  sprintf("- Training set: %s policies, %s policy years, %s claims.", fmt(nrow(train), 0),
+          fmt(sum(train$Exposure), 0), fmt(sum(train$ClaimCount), 0)),
+  sprintf("- Severity Gamma dispersion: %s, against a true squared coefficient of variation per claim of %s.",
+          fmt(sev_dispersion), fmt(z_cv2())),
   "",
   "## Holdout",
   "",
@@ -329,9 +592,17 @@ lines <- c(
           fmt(holdout$policies, 0), fmt(holdout$exposure, 0), fmt(holdout$claims, 0)),
   sprintf("- Actual over expected claim count: %s.", fmt(holdout$claims_ae)),
   sprintf("- Actual over expected claim cost: %s.", fmt(holdout$cost_ae)),
-  sprintf("- Poisson deviance explained by the frequency model: %s%%.", fmt(100 * holdout$freq_deviance_explained, 1)),
+  sprintf("- Deviance explained: frequency %s, severity %s, cost per policy year %s.",
+          pct(holdout$freq_deviance_explained), pct(holdout$sev_deviance_explained),
+          pct(holdout$cost_deviance_explained)),
   sprintf("- Gini of the pure premium: %s, against %s for the true generating model.",
           fmt(holdout$gini_model), fmt(holdout$gini_true)),
+  "",
+  "### Actual over expected by plan and province",
+  "",
+  "| Group | Policy years | Claims | Cost |",
+  "| --- | --- | --- | --- |",
+  vapply(c(ae_plan, ae_province), function(a) row(a$level, fmt(a$exposure, 0), fmt(a$claims_ae), fmt(a$cost_ae)), ""),
   "",
   "## Lift by predicted cost band",
   "",
@@ -339,19 +610,24 @@ lines <- c(
   "",
   "| Band | Policies | Predicted | Actual | True expected |",
   "| --- | --- | --- | --- | --- |",
-  vapply(lift, function(l) sprintf("| %d | %s | %s | %s | %s |", l$band, fmt(l$policies, 0),
-                                   fmt(l$predicted, 0), fmt(l$actual, 0), fmt(l$true, 0)), ""),
+  vapply(lift, function(l) row(l$band, fmt(l$policies, 0), fmt(l$predicted, 0),
+                               fmt(l$actual, 0), fmt(l$true, 0)), ""),
   "",
   "## Relativities against the true parameters",
   "",
-  "Multiplicative effect on the base profile, with 95% Wald intervals.",
+  "Multiplicative effect on the base profile, with 95% Wald intervals. Sex is compared for",
+  "severity only, because its frequency effect depends on age.",
+  sprintf("%d of %d intervals contain the true value.", intervals_covered, intervals_total),
   "",
   "| Factor | Level | Frequency [95% CI] | True | Severity [95% CI] | True |",
   "| --- | --- | --- | --- | --- | --- |",
-  vapply(factors, function(f) sprintf("| %s | %s | %s [%s, %s] | %s | %s [%s, %s] | %s |",
-                                      f$factor, f$level, fmt(f$freq), fmt(f$freq_lo), fmt(f$freq_hi),
-                                      fmt(f$true_freq), fmt(f$sev), fmt(f$sev_lo), fmt(f$sev_hi),
-                                      fmt(f$true_sev)), "")
+  vapply(factors, function(f) {
+    fr <- if (is.na(f$freq)) "" else sprintf("%s [%s, %s]", fmt(f$freq), fmt(f$freq_lo), fmt(f$freq_hi))
+    row(f$factor, f$level, fr, fmt(f$true_freq),
+        sprintf("%s [%s, %s]", fmt(f$sev), fmt(f$sev_lo), fmt(f$sev_hi)), fmt(f$true_sev))
+  }, ""),
+  "",
+  coverage_lines
 )
 writeLines(lines, "reports/validation.md")
 cat(lines, sep = "\n")
