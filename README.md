@@ -3,9 +3,9 @@
 A frequency-severity pricing model for health insurance, built in R on a synthetic South
 African portfolio of 100,000 members across the nine provinces and three benefit tiers. A
 negative binomial GLM predicts how often a member claims, a Gamma GLM predicts what each claim
-costs, and the two combine into a monthly risk premium with a 95% interval. A unisex tariff
-then charges women and men one smooth age curve that never falls with age, and shows the
-cross-subsidies that creates. Candidate models are compared on a holdout, and because the data
+costs, and the two combine into a monthly risk premium with a 95% interval. A tariff then
+smooths each sex's age curve so it never falls with age, shares the maternity cost across all
+members, and shows the cross-subsidies that creates. Candidate models are compared on a holdout, and because the data
 is synthetic, the fitted effects and the intervals are also checked against the true ones.
 
 **Live calculator:** https://brave-desert-0f162c50f.3.azurestaticapps.net
@@ -106,17 +106,17 @@ independent, so their variances add.
 
 **Tariff:** the fitted age factor for women rises to the maternity peak at about 31, dips and
 rises again, and a rate table that falls with age would be hard to justify to members. The
-tariff charges women and men the same rate at each age, so the maternity cost is shared across
-the book. The two sexes' fitted age and sex factors are averaged at each age, weighted by the
-training portfolio's expected claims, and the log of the average is graduated by
-Whittaker-Henderson smoothing (lambda = 100), which gives a curve that rises at least 1.1% a
-year. A constant rescale makes the tariff collect the same total premium as the risk premium.
-Each member's premium is the risk premium times tariff(age) / factor(age, sex), and the
-differences are cross-subsidies, in `reports/validation.md` by sex and age band. Women aged 25
-to 29 and 30 to 34 pay 9.6% and 18.1% less than their expected claims, and men of those ages
-15.3% and 15.1% more. Above 50 the flow reverses, since older men claim more than older women:
-women aged 60 to 69 pay 3.0% more and men 3.0% less. Across all ages, women pay 0.4% less and
-men 0.5% more.
+tariff keeps a curve for each sex and shares only the maternity cost. Each sex's log age and
+sex factor is graduated by Whittaker-Henderson smoothing (lambda = 10), weighted by the
+training portfolio's expected claims at each age and constrained never to fall. Women aged 23
+to 40, the ages where their fitted factor is above men's, get zero weight, so their curve
+bridges the maternity peak instead of following it. The premium that bridge leaves uncollected,
+2.1% of the total, is the maternity cost, and both curves are multiplied by 1.022 so the tariff
+collects the same total premium as the risk premium. Each member's premium is the risk premium
+times tariff(age, sex) / factor(age, sex); `reports/validation.md` has the cross-subsidies by
+sex and age band. Women aged 25 to 29 and 30 to 34 pay 19.4% and 27.4% less than their
+expected claims, and other bands pay 1.6% to 2.7% more. Across all ages, women pay 2.0% less
+and men 2.2% more.
 
 **Risk classes:** the quartiles of the expected claims cost among holdout members on the same
 plan, since across plans the cost mostly reflects the benefits bought.
@@ -166,8 +166,9 @@ The build is a static site, hosted on Azure Static Web Apps. The original Shiny 
 - Principal members only; dependants enter through the number of children, and there are no
   adult dependants, waiting periods, exclusions or pre-existing condition rules.
 - The tariff only smooths the age curve; it does not round to age bands or cap year-on-year
-  increases. Being unisex, it collects the right total only if the sex mix stays as priced: a
-  book that shifts towards women aged 25 to 39 would be underpriced.
+  increases. Because the maternity cost is pooled, it collects the right total only if the
+  share of women aged 23 to 40 stays as priced. The maternity ages and lambda are judgement
+  calls, and the data has no claim type, so maternity claims are identified by age and sex only.
 - Frequency and severity are independent by construction, and the loading is a flat
   percentage.
 - No excesses, benefit limits, co-payments, inflation or credibility weighting; the tiers

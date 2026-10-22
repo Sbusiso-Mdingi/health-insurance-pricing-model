@@ -19,6 +19,11 @@ const times = (v: number) => `× ${v.toFixed(3)}`;
 const pct = (v: number, d = 1) => `${(100 * v).toFixed(d)}%`;
 const rands = (v: number) => (v >= 1000 ? `R ${v / 1000}k` : `R ${v}`);
 const Z95 = 1.96;
+const MATERNITY = {
+  ages: `${MODEL.tariff.maternity_ages[0]} to ${MODEL.tariff.maternity_ages[1]}`,
+  cost: pct(MODEL.tariff.maternity_cost),
+  loading: pct(MODEL.tariff.loading - 1),
+};
 
 type Tab = "quote" | "factors" | "validation";
 
@@ -252,7 +257,7 @@ function QuoteTab() {
                 <td className="num">{money(q.pure)}</td>
               </tr>
               <tr>
-                <td>Unisex age tariff</td>
+                <td>Tariff and maternity pooling</td>
                 <td>
                   {profile.age}, {profile.sex}
                 </td>
@@ -283,8 +288,8 @@ function QuoteTab() {
           sex are shown together because the frequency model lets the age curve differ by sex. The
           interval comes from the two models' coefficient covariance matrices (the delta method on
           the log scale) and covers estimation uncertainty in the expected cost, not the spread of
-          one member's claims. The tariff replaces the fitted age and sex factor with one smooth curve
-          for both sexes that never falls with age, explained below.
+          one member's claims. The tariff replaces the fitted age and sex factor with a smooth curve
+          for each sex that never falls with age and shares the maternity cost, explained below.
         </p>
 
         <h3 className="section-title">Monthly premium by age for this profile</h3>
@@ -314,10 +319,10 @@ function QuoteTab() {
         </ul>
         <p className="hint">
           Women's expected claims rise to a maternity peak around age 31 and dip before rising again,
-          so the risk premium is not a sensible rate table. The tariff charges women and men the same
-          smooth, rising rate at each age, so the maternity cost is shared across the book: women in
-          their late twenties and early thirties pay less than their expected claims and men of the
-          same ages pay more.
+          so the risk premium is not a sensible rate table. The tariff bridges the peak with a smooth,
+          rising curve and shares the maternity cost across all members as a level loading of{" "}
+          {MATERNITY.loading}, so women aged {MATERNITY.ages} pay less than their expected claims and
+          everyone else pays about {MATERNITY.loading} more.
         </p>
       </div>
     </div>
@@ -500,13 +505,14 @@ function FactorsTab() {
       <h3 className="section-title">From risk premium to tariff</h3>
       <div className="two-up">
         <section className="panel">
-          <h3>Age factor, ages 18 to 55</h3>
+          <h3>Age and sex factor, ages 18 to 55</h3>
           <LineChart
-            label="Fitted age and sex factor for women and men, and the unisex tariff factor"
+            label="Fitted age and sex factor and the tariff factor, women and men"
             series={[
               { points: tariffLine("female", "risk"), color: "var(--gold)", dashed: true },
               { points: tariffLine("male", "risk"), color: "var(--green)", dashed: true },
-              { points: tariffLine("female", "tariff"), color: "var(--ink)" },
+              { points: tariffLine("female", "tariff"), color: "var(--gold)" },
+              { points: tariffLine("male", "tariff"), color: "var(--green)" },
             ]}
             xLabel="Age"
             yFormat={(v) => `× ${v}`}
@@ -515,16 +521,16 @@ function FactorsTab() {
           />
           <ul className="legend">
             <li>
-              <i style={{ background: "var(--ink)" }} />
-              Tariff, both sexes
+              <i style={{ background: "var(--gold)" }} />
+              Women
             </li>
             <li>
-              <i style={{ background: "repeating-linear-gradient(90deg, var(--gold) 0 5px, transparent 5px 8px)" }} />
-              Women, fitted
+              <i style={{ background: "var(--green)" }} />
+              Men
             </li>
             <li>
-              <i style={{ background: "repeating-linear-gradient(90deg, var(--green) 0 5px, transparent 5px 8px)" }} />
-              Men, fitted
+              <i className="dashed" />
+              Risk premium, fitted
             </li>
           </ul>
         </section>
@@ -561,13 +567,13 @@ function FactorsTab() {
       </div>
       <p className="hint">
         A rate table that falls with age, as the fitted factor for women does after the maternity
-        peak, would be hard to justify to members. The tariff averages the two sexes' factors at each
-        age, weighted by the training portfolio's expected claims, and graduates the result
-        (Whittaker-Henderson smoothing of the log factor) into a curve that rises at least 1% a year.
-        It is rescaled to collect the same total premium as the risk premium. The table shows how
-        much more (+) or less each band pays than its expected claims. Men aged 25 to 39 carry most
-        of the maternity cost; above 50 the flow reverses, because older men claim more than older
-        women, so across all ages the subsidy between the sexes is under 1%.
+        peak, would be hard to justify to members. Each sex's tariff is a Whittaker-Henderson
+        graduation of its log factor, weighted by the training portfolio's expected claims and
+        constrained never to fall. Women aged {MATERNITY.ages}, where their fitted factor is above
+        men's, get no weight, so their curve bridges the maternity peak. The premium that leaves
+        uncollected, {MATERNITY.cost} of the total, is the maternity cost, and a loading of{" "}
+        {MATERNITY.loading} on both curves recovers it from every member alike. The table shows how much more (+) or less each band pays than its expected
+        claims.
       </p>
 
       <h3 className="section-title">Other rating factors</h3>

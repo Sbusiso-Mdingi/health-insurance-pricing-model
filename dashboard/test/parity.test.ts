@@ -31,7 +31,7 @@ test("standard errors match R on 300 random profiles", () => {
   }
 });
 
-test("tariff premium matches R, never falls with age and is the same for both sexes", () => {
+test("tariff premium matches R and never falls with age", () => {
   for (const c of cases) {
     const q = quote(toProfile(c));
     expect(Math.abs(q.tariff / c.tariff - 1)).toBeLessThan(1e-9);
@@ -40,10 +40,6 @@ test("tariff premium matches R, never falls with age and is the same for both se
     const p = { ...toProfile(cases[0]), sex };
     for (let age = 19; age <= 85; age++)
       expect(quote({ ...p, age }).tariff).toBeGreaterThanOrEqual(quote({ ...p, age: age - 1 }).tariff * (1 - 1e-12));
-  }
-  for (let age = 18; age <= 85; age++) {
-    const p = { ...toProfile(cases[0]), age };
-    expect(Math.abs(quote({ ...p, sex: "female" }).tariff / quote({ ...p, sex: "male" }).tariff - 1)).toBeLessThan(1e-9);
   }
 });
 

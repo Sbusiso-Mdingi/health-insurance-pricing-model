@@ -370,27 +370,39 @@ curve <- function(var, values, sex = "female") {
 # --------------------------------------------------
 # The fitted age and sex factor for women rises to the maternity peak at
 # about 31, dips and rises again, and a published rate table should not
-# fall with age. The tariff charges men and women the same rate at each
-# age, so the maternity cost is shared across the book, and graduates that
-# unisex curve so it rises smoothly:
+# fall with age. The tariff keeps a rate curve for each sex but shares the
+# maternity cost across all members:
 #
-# 1. The unisex factor at each age is the average of the two sexes'
-#    factors, weighted by w, the risk premium the training portfolio has
-#    at that age and sex once the age and sex factor is taken out.
-# 2. Whittaker-Henderson graduation of its log: least squares weighted by
-#    each age's expected claims over the average age's, with a penalty
-#    lambda on second differences. Lambda = 18 is the least smoothing that
-#    makes the curve non-decreasing, but it leaves a near-flat stretch from
-#    34 to 38; lambda = 100 keeps it rising at least 1% a year.
-# 3. A constant rescale so the tariff collects the same total premium as
-#    the risk premium on the training portfolio.
+# 1. The maternity ages are those where women's fitted factor is above
+#    men's (23 to 40); at every other age women cost less than or about
+#    the same as men.
+# 2. Each sex's base curve is a Whittaker-Henderson graduation of its log
+#    factor: least squares weighted by each age's expected claims over the
+#    average age's, with a penalty lambda on second differences and a
+#    large penalty on any negative first difference, iterated until the
+#    penalised set stops changing (Eilers' asymmetric penalty), so the
+#    curve never falls. Women's maternity ages get zero weight, so their
+#    base curve bridges the peak smoothly instead of following it.
+# 3. What women's base curve does not collect is the maternity cost. The
+#    tariff is both base curves times one loading k that makes it collect
+#    the same total premium as the risk premium on the training portfolio,
+#    so every member pays the same share of the maternity cost.
 #
-# Every member's premium is multiplied by tariff(age) / factor(age, sex);
-# the differences are cross-subsidies between ages and between the sexes.
+# Every member's premium is multiplied by tariff(age, sex) / factor(age,
+# sex); the differences are cross-subsidies.
 
-graduate <- function(y, w, lambda) {
-  D2 <- diff(diag(length(y)), differences = 2)
-  drop(solve(diag(w) + lambda * crossprod(D2), w * y))
+graduate <- function(y, c, lambda, kappa = 1e8) {
+  n <- length(y)
+  D1 <- diff(diag(n)); D2 <- diff(diag(n), differences = 2)
+  P <- diag(c) + lambda * crossprod(D2)
+  v <- rep(0, n - 1)
+  for (it in 1:100) {
+    g <- drop(solve(P + kappa * crossprod(D1 * v), c * y))
+    v_new <- as.numeric(diff(g) < 0)
+    if (identical(v_new, v)) break
+    v <- v_new
+  }
+  cummax(g)  # removes differences of order 1/kappa left by the penalty
 }
 
 train$pred_rate <- predict_pure(train)
@@ -406,14 +418,24 @@ tariff_weight <- lapply(SEXES, function(s) {
     sum((train$Exposure[rows] * train$pred_rate[rows] / risk_factor[[s]][i])[i == j])
   }, 0)
 })
-w_all <- Reduce(`+`, tariff_weight)
-unisex <- Reduce(`+`, Map(`*`, tariff_weight, risk_factor)) / w_all
-claims_weight <- w_all * unisex / mean(w_all * unisex)
-TARIFF_LAMBDA <- 100
-tariff_curve <- exp(graduate(log(unisex), claims_weight, TARIFF_LAMBDA))
-tariff_curve <- tariff_curve * sum(w_all * unisex) / sum(w_all * tariff_curve)
-stopifnot(!is.unsorted(tariff_curve))
-tariff <- lapply(SEXES, function(s) list(risk = risk_factor[[s]], tariff = tariff_curve))
+maternity_ages <- ages[risk_factor$female > risk_factor$male]
+stopifnot(all(diff(maternity_ages) == 1))
+# Lambda = 10: lower values follow the fitted curves more closely outside
+# the maternity ages, higher values bend the bridge over them more gently.
+TARIFF_LAMBDA <- 10
+base_curve <- lapply(SEXES, function(s) {
+  c <- tariff_weight[[s]] * risk_factor[[s]]
+  c <- c / mean(c)
+  if (s == "female") c[ages %in% maternity_ages] <- 0
+  exp(graduate(log(risk_factor[[s]]), c, TARIFF_LAMBDA))
+})
+total_risk <- sum(unlist(Map(`*`, tariff_weight, risk_factor)))
+maternity_cost <- sum(tariff_weight$female * (risk_factor$female - base_curve$female)) / total_risk
+maternity_loading <- total_risk / sum(unlist(Map(`*`, tariff_weight, base_curve)))
+tariff <- lapply(SEXES, function(s) {
+  list(risk = risk_factor[[s]], tariff = maternity_loading * base_curve[[s]])
+})
+stopifnot(vapply(tariff, function(t) !is.unsorted(t$tariff), TRUE))
 
 tariff_ratio <- function(df) {
   out <- numeric(nrow(df))
@@ -477,7 +499,8 @@ export <- list(
   ),
   factors = factors,
   tariff = c(
-    list(ages = ages),
+    list(ages = ages, maternity_ages = range(maternity_ages), maternity_cost = maternity_cost,
+         loading = maternity_loading),
     lapply(tariff, function(t) list(risk = t$risk, tariff = t$tariff)),
     list(cross_subsidy = cross_subsidy)
   ),
@@ -702,13 +725,17 @@ lines <- c(
   "",
   "## Tariff and cross-subsidy",
   "",
-  "The tariff charges women and men the same rate at each age: the two sexes' fitted age",
-  "factors are averaged, weighted by the training portfolio's risk premium, and the log of",
-  sprintf("the average is graduated (Whittaker-Henderson, lambda = %g) and rescaled so the", TARIFF_LAMBDA),
-  "tariff collects the same total premium as the risk premium. Ratio is tariff premium over",
-  "risk premium on the training portfolio: above 1, the band pays more than its expected",
-  "claims and subsidises the others. Share is the band's share of the whole portfolio's risk",
-  "premium.",
+  "The tariff keeps a rate curve for each sex and shares the maternity cost across all",
+  sprintf("members. Each sex's log age factor is graduated (Whittaker-Henderson, lambda = %g,", TARIFF_LAMBDA),
+  sprintf("constrained not to fall), with women aged %d to %d, where their fitted factor is above",
+          min(maternity_ages), max(maternity_ages)),
+  "men's, given zero weight so the curve bridges the maternity peak. The premium women's",
+  sprintf("curve does not collect, %s of the total, is the maternity cost; both curves are", pct(maternity_cost)),
+  sprintf("multiplied by %s so the tariff collects the same total premium as the risk premium.",
+          fmt(maternity_loading, 4)),
+  "Ratio is tariff premium over risk premium on the training portfolio: above 1, the band",
+  "pays more than its expected claims and subsidises the others. Share is the band's share of",
+  "the whole portfolio's risk premium.",
   "",
   "| Sex | Age band | Share of risk premium | Tariff over risk |",
   "| --- | --- | --- | --- |",
