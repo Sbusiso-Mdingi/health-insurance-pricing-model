@@ -11,6 +11,7 @@
 # Outputs:
 #   models/freq_model.rds, models/sev_model.rds   fitted models, with vcov
 #   models/portfolio_percentiles.rds              holdout pure premium percentiles by plan
+#   models/tariff.rds                             risk and tariff age factors by sex
 #   reports/validation.md                         comparison and holdout results
 #   dashboard/src/model.json                      model export for the dashboard
 #   dashboard/test/parity-cases.json              R predictions for the parity test
@@ -260,7 +261,7 @@ lift <- lapply(1:10, function(b) {
 # through the interaction, and is shown as a curve instead.
 
 base <- data.frame(Age = 40, BMI = 25, Sex = "female", Smoker = "no",
-                   Province = "Gauteng", Plan = "Hospital", Children = 0, Exposure = 1)
+                   Province = "Gauteng", Plan = "Essential", Children = 0, Exposure = 1)
 base <- set_levels(base)
 
 factor_rows <- c(
@@ -364,6 +365,76 @@ curve <- function(var, values, sex = "female") {
        sev = side(sev_model, V_sev, true_severity))
 }
 
+# --------------------------------------------------
+# TARIFF
+# --------------------------------------------------
+# The fitted age and sex factor for women rises to the maternity peak at
+# about 31, dips and rises again, and a published rate table should not
+# fall with age. The tariff replaces each sex's age factor with the closest
+# non-decreasing curve: a weighted isotonic regression (pool adjacent
+# violators), weighted by the risk premium the training portfolio has at
+# each age once the age and sex factor is taken out. Pooling preserves the
+# weighted total, so the tariff collects the same premium as the risk
+# premium within each sex. The difference is a cross-subsidy between ages:
+# members in a pooled block pay the block's average factor.
+
+pava <- function(y, w) {
+  v <- y; wt <- w; n <- rep(1, length(y)); k <- 0
+  for (i in seq_along(y)) {
+    k <- k + 1
+    v[k] <- y[i]; wt[k] <- w[i]; n[k] <- 1
+    while (k > 1 && v[k - 1] > v[k]) {
+      v[k - 1] <- (wt[k - 1] * v[k - 1] + wt[k] * v[k]) / (wt[k - 1] + wt[k])
+      wt[k - 1] <- wt[k - 1] + wt[k]
+      n[k - 1] <- n[k - 1] + n[k]
+      k <- k - 1
+    }
+  }
+  rep(v[1:k], n[1:k])
+}
+
+train$pred_rate <- predict_pure(train)
+risk_factor <- lapply(setNames(levels(base$Sex), levels(base$Sex)), function(s) {
+  a <- curve("Age", ages, s)
+  exp(a$freq$fit + a$sev$fit)
+})
+tariff <- lapply(setNames(names(risk_factor), names(risk_factor)), function(s) {
+  f <- risk_factor[[s]]
+  rows <- train$Sex == s
+  i <- match(train$Age[rows], ages)
+  w <- vapply(seq_along(ages), function(j) {
+    sum((train$Exposure[rows] * train$pred_rate[rows] / f[i])[i == j])
+  }, 0)
+  list(risk = f, tariff = pava(f, w), weight = w)
+})
+stopifnot(vapply(tariff, function(t) {
+  abs(sum(t$weight * t$tariff) / sum(t$weight * t$risk) - 1) < 1e-12 && !is.unsorted(t$tariff)
+}, TRUE))
+
+tariff_ratio <- function(df) {
+  out <- numeric(nrow(df))
+  for (s in names(tariff)) {
+    rows <- df$Sex == s
+    i <- match(df$Age[rows], ages)
+    out[rows] <- tariff[[s]]$tariff[i] / tariff[[s]]$risk[i]
+  }
+  out
+}
+
+# Cross-subsidy by age band and sex on the training portfolio: tariff
+# premium over risk premium.
+age_bands <- list(c(18, 24), c(25, 29), c(30, 34), c(35, 39), c(40, 44), c(45, 49),
+                  c(50, 59), c(60, 69), c(70, 85))
+cross_subsidy <- do.call(c, lapply(names(tariff), function(s) {
+  lapply(age_bands, function(b) {
+    rows <- train$Sex == s & train$Age >= b[1] & train$Age <= b[2]
+    risk <- train$Exposure[rows] * train$pred_rate[rows]
+    list(sex = s, band = sprintf("%d to %d", b[1], b[2]),
+         share = sum(risk) / sum(train$Exposure[train$Sex == s] * train$pred_rate[train$Sex == s]),
+         ratio = sum(risk * tariff_ratio(train[rows, ])) / sum(risk))
+  })
+}))
+
 # Holdout distribution of the annual pure premium within each plan, used
 # to place a quoted profile among members on the same plan and to set the
 # risk classes. Across plans the premium mostly reflects the benefits
@@ -398,6 +469,11 @@ export <- list(
     bmi = curve("BMI", bmis)
   ),
   factors = factors,
+  tariff = c(
+    list(ages = ages),
+    lapply(tariff, function(t) list(risk = t$risk, tariff = t$tariff)),
+    list(cross_subsidy = cross_subsidy)
+  ),
   portfolio = percentiles_by_plan,
   comparison = list(
     frequency = freq_comparison,
@@ -447,6 +523,7 @@ cases$severity <- predict_severity(cases)
 cases$pure <- cases$frequency * cases$severity
 cases$se_frequency <- lf$se
 cases$se_severity <- ls$se
+cases$tariff <- cases$pure * tariff_ratio(cases)
 cases$Exposure <- NULL
 stopifnot(max(abs(exp(lf$fit + ls$fit) / cases$pure - 1)) < 1e-12)
 write_json(cases, "dashboard/test/parity-cases.json", digits = NA)
@@ -472,6 +549,9 @@ dir.create("models", showWarnings = FALSE)
 saveRDS(strip(freq_model, V_freq), "models/freq_model.rds")
 saveRDS(strip(sev_model, V_sev), "models/sev_model.rds")
 saveRDS(lapply(percentiles_by_plan, `[[`, "percentiles"), "models/portfolio_percentiles.rds")
+saveRDS(do.call(rbind, lapply(names(tariff), function(s) {
+  data.frame(Age = ages, Sex = s, risk = tariff[[s]]$risk, tariff = tariff[[s]]$tariff)
+})), "models/tariff.rds")
 
 # --------------------------------------------------
 # VALIDATION REPORT
@@ -612,6 +692,18 @@ lines <- c(
   "| --- | --- | --- | --- | --- |",
   vapply(lift, function(l) row(l$band, fmt(l$policies, 0), fmt(l$predicted, 0),
                                fmt(l$actual, 0), fmt(l$true, 0)), ""),
+  "",
+  "## Tariff and cross-subsidy",
+  "",
+  "The tariff replaces each sex's fitted age factor with the closest curve that never falls",
+  "with age (weighted isotonic regression, weighted by the training portfolio's risk premium",
+  "at each age), so it collects the same total premium as the risk premium within each sex.",
+  "Ratio is tariff premium over risk premium on the training portfolio: above 1, the band pays",
+  "more than its expected claims and subsidises the others.",
+  "",
+  "| Sex | Age band | Share of risk premium | Tariff over risk |",
+  "| --- | --- | --- | --- |",
+  vapply(cross_subsidy, function(c) row(c$sex, c$band, pct(c$share), fmt(c$ratio)), ""),
   "",
   "## Relativities against the true parameters",
   "",

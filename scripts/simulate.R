@@ -8,15 +8,19 @@
 # and the coverage study all use this file, so the parameters live in one
 # place.
 #
-# The parameters are illustrative assumptions chosen to look plausible for a
-# private medical scheme portfolio. They are not estimated from real data.
+# The product is generic health insurance with three benefit tiers, and the
+# provinces give the portfolio a South African geography. The parameters are
+# illustrative assumptions, not estimated from real data.
 # --------------------------------------------------
 
 PROVINCES <- c(
   "Gauteng", "Western Cape", "KwaZulu-Natal", "Eastern Cape", "Free State",
   "Limpopo", "Mpumalanga", "North West", "Northern Cape"
 )
-PLANS <- c("Hospital", "Saver", "Comprehensive")
+# Benefit tiers by scope of cover. Essential covers in-hospital treatment;
+# Standard adds out-of-hospital specialists, scans and tests; Comprehensive
+# adds GP visits, prescribed medicines, dental and optical.
+PLANS <- c("Essential", "Standard", "Comprehensive")
 
 TRUTH <- list(
   # Membership is concentrated in the metros, so the province mix is far
@@ -24,7 +28,7 @@ TRUTH <- list(
   province_share = c(0.38, 0.17, 0.15, 0.07, 0.05, 0.05, 0.06, 0.05, 0.02),
 
   # Claim frequency, per policy year, on the log scale. The base is a
-  # 40-year-old woman in Gauteng on a hospital plan, non-smoker, BMI 25,
+  # 40-year-old woman in Gauteng on the Essential plan, non-smoker, BMI 25,
   # no children.
   freq_base = log(0.30),
   freq_age = 0.025,              # per year of age
@@ -35,7 +39,7 @@ TRUTH <- list(
   freq_smoker = 0.26,
   freq_child = 0.22,             # per dependent child
   freq_province = c(0, -0.03, -0.05, -0.10, -0.08, -0.15, -0.10, -0.10, -0.12),
-  freq_plan = c(0, log(4), log(10)),  # day-to-day benefits mean many more, smaller claims
+  freq_plan = c(0, log(4), log(10)),  # out-of-hospital cover means many more, smaller claims
   frailty_var = 0.3,             # gamma frailty: negative binomial with theta = 1 / 0.3
 
   # Claim severity, per claim, on the log scale.
@@ -128,7 +132,7 @@ simulate_portfolio <- function(n = 1e5, seed = 123, t = TRUTH) {
   )
   BMI <- round(pmin(pmax(BMI, 16), 50), 1)
 
-  # Plan choice: older members buy richer cover, families lean to savings plans.
+  # Plan choice: older members buy richer cover, families lean to Standard.
   u <- cbind(
     0,
     0.2 + 0.25 * (Children > 0),

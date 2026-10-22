@@ -31,6 +31,18 @@ test("standard errors match R on 300 random profiles", () => {
   }
 });
 
+test("tariff premium matches R and never falls with age", () => {
+  for (const c of cases) {
+    const q = quote(toProfile(c));
+    expect(Math.abs(q.tariff / c.tariff - 1)).toBeLessThan(1e-9);
+  }
+  for (const sex of ["female", "male"] as const) {
+    const p = { ...toProfile(cases[0]), sex };
+    for (let age = 19; age <= 85; age++)
+      expect(quote({ ...p, age }).tariff).toBeGreaterThanOrEqual(quote({ ...p, age: age - 1 }).tariff * (1 - 1e-12));
+  }
+});
+
 test("factor relativities multiply back to the pure premium", () => {
   for (const c of cases.slice(0, 50)) {
     const q = quote(toProfile(c));

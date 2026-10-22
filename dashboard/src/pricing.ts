@@ -45,6 +45,7 @@ export const BASE: Profile = {
 const FREQUENCY = model.frequency as unknown as Glm;
 const SEVERITY = model.severity as unknown as Glm;
 const Z95 = 1.959963984540054;
+const TARIFF = model.tariff as unknown as Record<Sex, { risk: number[]; tariff: number[] }>;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 export const ageIndex = (age: number) => clamp(Math.round(age), AGE_RANGE[0], AGE_RANGE[1]) - AGE_RANGE[0];
@@ -145,6 +146,10 @@ export function quote(p: Profile) {
   const se = Math.sqrt(f.se ** 2 + s.se ** 2);
   const cf = groupContributions(FREQUENCY, p);
   const cs = groupContributions(SEVERITY, p);
+  // The tariff replaces the fitted age and sex factor with each sex's
+  // non-decreasing tariff curve; smoothing is the ratio of the two.
+  const ageSex = GROUPS.findIndex((g) => g.includes("Age"));
+  const smoothing = TARIFF[p.sex].tariff[ageIndex(p.age)] / Math.exp(cf[ageSex] + cs[ageSex]);
   return {
     frequency: Math.exp(f.fit),
     severity: Math.exp(s.fit),
@@ -155,6 +160,8 @@ export function quote(p: Profile) {
     se: { frequency: f.se, severity: s.se, pure: se },
     pureLow: Math.exp(f.fit + s.fit - Z95 * se),
     pureHigh: Math.exp(f.fit + s.fit + Z95 * se),
+    smoothing,
+    tariff: Math.exp(f.fit + s.fit) * smoothing,
     base: { frequency: Math.exp(f0), severity: Math.exp(s0), pure: Math.exp(f0 + s0) },
     factors: GROUPS.map((g, i) => ({
       key: g.join("-"),

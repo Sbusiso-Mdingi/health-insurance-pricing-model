@@ -11,6 +11,7 @@ library(ggplot2)
 freq_glm    <- readRDS("../models/freq_model.rds")
 sev_glm     <- readRDS("../models/sev_model.rds")
 percentiles <- readRDS("../models/portfolio_percentiles.rds")
+tariff      <- readRDS("../models/tariff.rds")
 
 PROVINCES <- freq_glm$xlevels$Province
 PLANS <- freq_glm$xlevels$Plan
@@ -41,8 +42,16 @@ price <- function(df) {
     severity = exp(s$fit),
     pure = exp(f$fit + s$fit),
     low = exp(f$fit + s$fit - qnorm(0.975) * se),
-    high = exp(f$fit + s$fit + qnorm(0.975) * se)
+    high = exp(f$fit + s$fit + qnorm(0.975) * se),
+    tariff = exp(f$fit + s$fit) * tariff_ratio(df)
   )
+}
+
+# The tariff replaces the fitted age and sex factor with each sex's
+# non-decreasing tariff curve; this is the ratio of the two
+tariff_ratio <- function(df) {
+  i <- match(paste(df$Age, df$Sex), paste(tariff$Age, tariff$Sex))
+  tariff$tariff[i] / tariff$risk[i]
 }
 
 # Share of holdout members on the same plan with a lower pure premium
@@ -97,7 +106,7 @@ ui <- fluidPage(
         selectInput("sex", "Sex", choices = c("female", "male")),
         selectInput("smoker", "Smoking status", choices = c("no", "yes")),
         selectInput("province", "Province", choices = PROVINCES),
-        selectInput("plan", "Plan", choices = PLANS, selected = "Saver")
+        selectInput("plan", "Plan", choices = PLANS, selected = "Standard")
       ),
 
       card(
@@ -118,7 +127,7 @@ ui <- fluidPage(
       8,
 
       card(
-        card_header("Indicative monthly risk premium"),
+        card_header("Indicative monthly premium"),
         h2(
           textOutput("premium"),
           class = "text-center fw-bold"
@@ -145,9 +154,8 @@ ui <- fluidPage(
       hr(),
       p(
         paste(
-          "Synthetic data. Demonstration use only. South African medical schemes must charge",
-          "community rates, so this is the underlying risk cost, not a contribution a scheme",
-          "could charge."
+          "Synthetic data. Demonstration use only. The tariff smooths the age curve so the premium",
+          "never falls with age, collecting the same total premium within each sex."
         ),
         class = "text-center text-muted"
       )
@@ -178,13 +186,14 @@ server <- function(input, output, session) {
 
   # -------- Premium Text --------
   output$premium <- renderText({
-    paste(rand(monthly(quote()$pure)), "a month")
+    paste(rand(monthly(quote()$tariff)), "a month")
   })
 
   output$premium_detail <- renderText({
     q <- quote()
-    sprintf("%s a year. 95%% interval %s to %s a month.",
-            rand(q$pure * (1 + input$loading)), rand(monthly(q$low)), rand(monthly(q$high)))
+    sprintf("%s a year. Risk premium %s a month, 95%% interval %s to %s.",
+            rand(q$tariff * (1 + input$loading)), rand(monthly(q$pure)), rand(monthly(q$low)),
+            rand(monthly(q$high)))
   })
 
   # -------- Risk Badge --------
@@ -220,6 +229,7 @@ server <- function(input, output, session) {
         "Expected claims per year",
         "Expected cost per claim",
         "Expected claims cost per year",
+        "Tariff age smoothing",
         "Annual premium",
         "Monthly premium"
       ),
@@ -227,8 +237,9 @@ server <- function(input, output, session) {
         format(round(q$frequency, 3), nsmall = 3),
         rand(q$severity),
         rand(q$pure),
-        rand(q$pure * (1 + input$loading)),
-        rand(monthly(q$pure))
+        sprintf("x %.3f", q$tariff / q$pure),
+        rand(q$tariff * (1 + input$loading)),
+        rand(monthly(q$tariff))
       )
     )
   })
@@ -238,9 +249,11 @@ server <- function(input, output, session) {
 
     age_df <- cbind(data.frame(Age = 18:85), price(member(18:85)))
 
-    ggplot(age_df, aes(Age, monthly(pure))) +
+    ggplot(age_df, aes(Age)) +
       geom_ribbon(aes(ymin = monthly(low), ymax = monthly(high)), fill = "#e0a449", alpha = 0.25) +
-      geom_line(color = "#e0a449", linewidth = 1.2) +
+      geom_line(aes(y = monthly(pure), linetype = "Risk premium"), color = "#e0a449", linewidth = 1) +
+      geom_line(aes(y = monthly(tariff), linetype = "Tariff premium"), color = "#111614", linewidth = 1) +
+      scale_linetype_manual(values = c("Risk premium" = "dashed", "Tariff premium" = "solid"), name = NULL) +
       geom_vline(xintercept = input$age, linetype = "dashed", alpha = 0.6) +
       scale_y_continuous(labels = rand, limits = c(0, NA)) +
       theme_minimal(base_size = 12) +
@@ -248,7 +261,8 @@ server <- function(input, output, session) {
         plot.background = element_rect(fill = "transparent", color = NA),
         panel.background = element_rect(fill = "transparent", color = NA),
         text = element_text(color = "black"),
-        axis.text = element_text(color = "black")
+        axis.text = element_text(color = "black"),
+        legend.position = "bottom"
       ) +
       labs(
         x = "Age",

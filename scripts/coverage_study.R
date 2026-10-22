@@ -44,19 +44,19 @@ coef_targets <- rbind(
 
 profiles <- set_levels(data.frame(
   label = c(
-    "Base: woman, 40, Gauteng, Hospital",
-    "Man, 30, smoker, Western Cape, Saver",
-    "Woman, 31, 2 children, KwaZulu-Natal, Saver",
+    "Base: woman, 40, Gauteng, Essential",
+    "Man, 30, smoker, Western Cape, Standard",
+    "Woman, 31, 2 children, KwaZulu-Natal, Standard",
     "Woman, 62, BMI 32, Gauteng, Comprehensive",
     "Man, 50, 1 child, Limpopo, Comprehensive",
-    "Man, 78, smoker, BMI 30, Northern Cape, Hospital"
+    "Man, 78, smoker, BMI 30, Northern Cape, Essential"
   ),
   Age = c(40, 30, 31, 62, 50, 78),
   Sex = c("female", "male", "female", "female", "male", "male"),
   BMI = c(25, 24, 27, 32, 28, 30),
   Smoker = c("no", "yes", "no", "no", "no", "yes"),
   Province = c("Gauteng", "Western Cape", "KwaZulu-Natal", "Gauteng", "Limpopo", "Northern Cape"),
-  Plan = c("Hospital", "Saver", "Saver", "Comprehensive", "Comprehensive", "Hospital"),
+  Plan = c("Essential", "Standard", "Standard", "Comprehensive", "Comprehensive", "Essential"),
   Children = c(0, 0, 2, 0, 1, 0),
   Exposure = 1
 ))

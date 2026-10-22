@@ -60,7 +60,7 @@ export function App({ embedded }: { embedded: boolean }) {
         <ValidationTab />
       </div>
       <p className="footnote">
-        Synthetic data: the premiums are illustrative, not real medical scheme contributions. The
+        Synthetic data: the premiums are illustrative, not real insurance rates. The
         models are fitted in R; this page applies the exported coefficients and gives the same prices
         and intervals as R.
         {embedded ? "" : " Source: github.com/Sbusiso-Mdingi/health-insurance-pricing-model."}
@@ -78,7 +78,7 @@ function QuoteTab() {
     sex: "female",
     smoker: "no",
     province: "Gauteng",
-    plan: "Saver",
+    plan: "Standard",
     children: 1,
   });
   const [loading, setLoading] = useState(0.15);
@@ -91,13 +91,15 @@ function QuoteTab() {
   const risk = riskClass(percentile);
   const ageCurve = useMemo(() => {
     const line: [number, number][] = [];
+    const tariff: [number, number][] = [];
     const band: Band["points"] = [];
     for (let a = AGE_RANGE[0]; a <= AGE_RANGE[1]; a++) {
       const r = quote({ ...profile, age: a });
       line.push([a, monthly(r.pure)]);
+      tariff.push([a, monthly(r.tariff)]);
       band.push([a, monthly(r.pureLow), monthly(r.pureHigh)]);
     }
-    return { line, band };
+    return { line, tariff, band };
   }, [profile, loading]);
 
   return (
@@ -151,9 +153,10 @@ function QuoteTab() {
           onChange={setLoading}
         />
         <p className="hint">
-          Hospital plans cover hospital events only, Saver plans add a medical savings account, and
-          Comprehensive plans add day-to-day benefits. Ages and BMIs are limited to the ranges the
-          models were fitted on. The 15% loading is an assumption, not a fitted value.
+          Essential covers in-hospital treatment, Standard adds out-of-hospital specialists, scans
+          and tests, and Comprehensive adds GP visits, prescribed medicines, dental and optical. Ages
+          and BMIs are limited to the ranges the models were fitted on. The 15% loading is an
+          assumption, not a fitted value.
         </p>
       </section>
 
@@ -161,14 +164,14 @@ function QuoteTab() {
         <section className="panel" aria-live="polite">
           <div className="premium">
             <div>
-              <p className="tag">Risk premium</p>
+              <p className="tag">Premium</p>
               <p className="premium-figure">
-                {money(monthly(q.pure))}
+                {money(monthly(q.tariff))}
                 <small>a month</small>
               </p>
               <p className="premium-sub">
-                {money(q.pure * load)} a year. 95% interval {money(monthly(q.pureLow))} to {money(monthly(q.pureHigh))}{" "}
-                a month.
+                {money(q.tariff * load)} a year. Risk premium {money(monthly(q.pure))} a month, 95% interval{" "}
+                {money(monthly(q.pureLow))} to {money(monthly(q.pureHigh))}.
               </p>
             </div>
             <span className={`badge ${risk.tone}`}>{risk.label}</span>
@@ -249,6 +252,15 @@ function QuoteTab() {
                 <td className="num">{money(q.pure)}</td>
               </tr>
               <tr>
+                <td>Tariff age smoothing</td>
+                <td>
+                  {profile.age}, {profile.sex}
+                </td>
+                <td />
+                <td />
+                <td className="num">{times(q.smoothing)}</td>
+              </tr>
+              <tr>
                 <td>Loading</td>
                 <td>{Math.round(loading * 100)}%</td>
                 <td />
@@ -260,37 +272,52 @@ function QuoteTab() {
                 <td />
                 <td />
                 <td />
-                <td className="num">{money(q.pure * load)}</td>
+                <td className="num">{money(q.tariff * load)}</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p className="hint">
-          The base profile is a 40-year-old woman in Gauteng on a Hospital plan, a non-smoker with a
+          The base profile is a 40-year-old woman in Gauteng on the Essential plan, a non-smoker with a
           BMI of 25 and no children. Each factor multiplies the base frequency and severity. Age and
           sex are shown together because the frequency model lets the age curve differ by sex. The
           interval comes from the two models' coefficient covariance matrices (the delta method on
           the log scale) and covers estimation uncertainty in the expected cost, not the spread of
-          one member's claims.
+          one member's claims. The tariff smoothing replaces the fitted age factor with a curve that
+          never falls with age, explained below.
         </p>
 
         <h3 className="section-title">Monthly premium by age for this profile</h3>
         <LineChart
-          label="Monthly premium by age for the chosen profile, with its 95% interval"
+          label="Monthly tariff premium and risk premium by age for the chosen profile, with the risk premium's 95% interval"
           bands={[{ points: ageCurve.band, color: "rgba(224, 164, 73, 0.25)" }]}
-          series={[{ points: ageCurve.line, color: "var(--gold)" }]}
-          marker={[profile.age, monthly(q.pure)]}
+          series={[
+            { points: ageCurve.line, color: "var(--gold)", dashed: true },
+            { points: ageCurve.tariff, color: "var(--ink)" },
+          ]}
+          marker={[profile.age, monthly(q.tariff)]}
           xLabel="Age"
           yMin={0}
           yFormat={rands}
           width={460}
           height={240}
         />
+        <ul className="legend">
+          <li>
+            <i style={{ background: "var(--ink)" }} />
+            Tariff premium
+          </li>
+          <li>
+            <i style={{ background: "repeating-linear-gradient(90deg, var(--gold) 0 5px, transparent 5px 8px)" }} />
+            Risk premium, with 95% interval
+          </li>
+        </ul>
         <p className="hint">
-          South African medical schemes must charge community rates under the Medical Schemes Act,
-          so a scheme could not charge these prices. A risk premium like this shows the underlying
-          cost of each member, which is what a scheme uses to understand cross-subsidies and what
-          gap cover and other insurers can price on.
+          Women's expected claims rise to a maternity peak around age 31 and dip before rising again,
+          so the risk premium is not a sensible rate table. The tariff pools those ages into one level
+          that collects the same total premium from women, so women around the peak pay less than
+          their expected claims and women in their late thirties pay more: a cross-subsidy between
+          ages. Men's risk premium already rises with age and is unchanged.
         </p>
       </div>
     </div>
@@ -361,6 +388,11 @@ function FactorsTab() {
   const ages = MODEL.curves.age.female.freq.fit.map((_, i) => AGE_RANGE[0] + i);
   const bmis = MODEL.curves.bmi.freq.fit.map((_, i) => BMI_RANGE[0] + i / 10);
   const what = { pure: "expected cost", freq: "claim frequency", sev: "cost per claim" }[component];
+  const tariffLine = (sex: "female" | "male", which: "risk" | "tariff"): [number, number][] =>
+    MODEL.tariff[sex][which]
+      .map((v, i): [number, number] => [MODEL.tariff.ages[i], v])
+      .filter(([age]) => age <= 55);
+  const subsidyBands = [...new Set(MODEL.tariff.cross_subsidy.map((c) => c.band))];
 
   // Log relativity of the chosen component, fitted with its standard error,
   // and true. The two models are independent, so the variances add.
@@ -465,6 +497,79 @@ function FactorsTab() {
         </section>
       </div>
 
+      <h3 className="section-title">From risk premium to tariff</h3>
+      <div className="two-up">
+        <section className="panel">
+          <h3>Age and sex factor, ages 18 to 55</h3>
+          <LineChart
+            label="Fitted age and sex factor and the tariff factor, women and men"
+            series={[
+              { points: tariffLine("female", "risk"), color: "var(--gold)", dashed: true },
+              { points: tariffLine("male", "risk"), color: "var(--green)", dashed: true },
+              { points: tariffLine("female", "tariff"), color: "var(--gold)" },
+              { points: tariffLine("male", "tariff"), color: "var(--green)" },
+            ]}
+            xLabel="Age"
+            yFormat={(v) => `× ${v}`}
+            height={300}
+            width={420}
+          />
+          <ul className="legend">
+            <li>
+              <i style={{ background: "var(--gold)" }} />
+              Women
+            </li>
+            <li>
+              <i style={{ background: "var(--green)" }} />
+              Men
+            </li>
+            <li>
+              <i className="dashed" />
+              Risk premium, fitted
+            </li>
+          </ul>
+        </section>
+        <section className="panel">
+          <h3>Cross-subsidy by age</h3>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Age</th>
+                  <th className="num">Women</th>
+                  <th className="num">Men</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subsidyBands.map((band) => (
+                  <tr key={band}>
+                    <td>{band}</td>
+                    {(["female", "male"] as const).map((sex) => {
+                      const r = MODEL.tariff.cross_subsidy.find((c) => c.sex === sex && c.band === band)!;
+                      const d = (r.ratio - 1) * 100;
+                      return (
+                        <td key={sex} className="num">
+                          {Math.abs(d) < 0.05 ? "0.0%" : `${d > 0 ? "+" : ""}${d.toFixed(1)}%`}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <p className="hint">
+        A rate table that falls with age, as the fitted factor for women does after the maternity
+        peak, would be hard to justify to members. The tariff is the closest curve to each sex's
+        fitted factor that never falls with age (a weighted isotonic regression), weighted by the
+        training portfolio's expected claims at each age, so it collects the same total premium from
+        each sex. The table shows how much more (+) or less each age band pays than its expected
+        claims: women around the peak are subsidised by women in their late thirties and early
+        forties.
+      </p>
+
       <h3 className="section-title">Other rating factors</h3>
       <div className="table-wrap">
         <table>
@@ -509,7 +614,7 @@ function FactorsTab() {
         </table>
       </div>
       <p className="hint">
-        Multiplicative relativities against the base level (Gauteng, Hospital plan, non-smoker, no
+        Multiplicative relativities against the base level (Gauteng, Essential plan, non-smoker, no
         children), with 95% confidence intervals. The sex effect on frequency depends on age, so it
         is shown in the age chart instead.
       </p>

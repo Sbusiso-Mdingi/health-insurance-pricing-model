@@ -89,8 +89,8 @@ Holdout cost per policy year. Deviance explained uses the Tweedie deviance with 
 
 | Group | Policy years | Claims | Cost |
 | --- | --- | --- | --- |
-| Hospital | 6,471 | 1.019 | 0.963 |
-| Saver | 8,799 | 0.990 | 0.979 |
+| Essential | 6,471 | 1.019 | 0.963 |
+| Standard | 8,799 | 0.990 | 0.979 |
 | Comprehensive | 3,181 | 1.004 | 1.018 |
 | Gauteng | 6,917 | 0.999 | 0.995 |
 | Western Cape | 3,166 | 1.014 | 0.997 |
@@ -119,6 +119,35 @@ Ten bands of equal exposure, from lowest to highest predicted cost per policy ye
 | 9 | 2,025 | 74,217 | 73,566 | 74,087 |
 | 10 | 2,018 | 125,329 | 123,894 | 125,697 |
 
+## Tariff and cross-subsidy
+
+The tariff replaces each sex's fitted age factor with the closest curve that never falls
+with age (weighted isotonic regression, weighted by the training portfolio's risk premium
+at each age), so it collects the same total premium as the risk premium within each sex.
+Ratio is tariff premium over risk premium on the training portfolio: above 1, the band pays
+more than its expected claims and subsidises the others.
+
+| Sex | Age band | Share of risk premium | Tariff over risk |
+| --- | --- | --- | --- |
+| female | 18 to 24 | 1.4% | 1.000 |
+| female | 25 to 29 | 4.0% | 1.000 |
+| female | 30 to 34 | 7.8% | 0.945 |
+| female | 35 to 39 | 9.2% | 1.033 |
+| female | 40 to 44 | 10.5% | 1.012 |
+| female | 45 to 49 | 11.0% | 1.000 |
+| female | 50 to 59 | 22.4% | 1.000 |
+| female | 60 to 69 | 20.0% | 1.000 |
+| female | 70 to 85 | 13.6% | 1.000 |
+| male | 18 to 24 | 1.5% | 1.000 |
+| male | 25 to 29 | 3.3% | 1.000 |
+| male | 30 to 34 | 5.7% | 1.000 |
+| male | 35 to 39 | 8.4% | 1.000 |
+| male | 40 to 44 | 11.0% | 1.000 |
+| male | 45 to 49 | 11.3% | 1.000 |
+| male | 50 to 59 | 23.3% | 1.000 |
+| male | 60 to 69 | 21.4% | 1.000 |
+| male | 70 to 85 | 14.1% | 1.000 |
+
 ## Relativities against the true parameters
 
 Multiplicative effect on the base profile, with 95% Wald intervals. Sex is compared for
@@ -130,7 +159,7 @@ severity only, because its frequency effect depends on age.
 | Smoker | yes | 1.304 [1.282, 1.327] | 1.297 | 1.268 [1.241, 1.295] | 1.246 |
 | Children | each child | 1.252 [1.243, 1.262] | 1.246 | 0.924 [0.916, 0.933] | 0.930 |
 | Sex | male |  |  | 1.052 [1.033, 1.071] | 1.050 |
-| Plan | Saver | 4.026 [3.943, 4.111] | 4.000 | 0.453 [0.438, 0.468] | 0.450 |
+| Plan | Standard | 4.026 [3.943, 4.111] | 4.000 | 0.453 [0.438, 0.468] | 0.450 |
 | Plan | Comprehensive | 10.057 [9.834, 10.284] | 10.000 | 0.250 [0.242, 0.259] | 0.250 |
 | Province | Western Cape | 0.969 [0.950, 0.988] | 0.970 | 1.024 [0.998, 1.049] | 1.020 |
 | Province | KwaZulu-Natal | 0.951 [0.932, 0.971] | 0.951 | 0.963 [0.939, 0.989] | 0.961 |
@@ -157,10 +186,10 @@ Premium intervals (negative binomial x Gamma) for six fixed profiles:
 
 | Profile | Coverage | Bias (log) |
 | --- | --- | --- |
-| Base: woman, 40, Gauteng, Hospital | 88.0% | 0.0193 |
-| Man, 30, smoker, Western Cape, Saver | 94.5% | -0.0046 |
-| Woman, 31, 2 children, KwaZulu-Natal, Saver | 91.5% | -0.0106 |
+| Base: woman, 40, Gauteng, Essential | 88.0% | 0.0193 |
+| Man, 30, smoker, Western Cape, Standard | 94.5% | -0.0046 |
+| Woman, 31, 2 children, KwaZulu-Natal, Standard | 91.5% | -0.0106 |
 | Woman, 62, BMI 32, Gauteng, Comprehensive | 94.0% | -0.0023 |
 | Man, 50, 1 child, Limpopo, Comprehensive | 94.0% | -0.0062 |
-| Man, 78, smoker, BMI 30, Northern Cape, Hospital | 93.0% | -0.0008 |
+| Man, 78, smoker, BMI 30, Northern Cape, Essential | 93.0% | -0.0008 |
 

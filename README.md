@@ -1,9 +1,11 @@
 # Health Insurance Pricing Model
 
-A frequency-severity pricing model for South African private health cover, built in R on a
-synthetic portfolio of 100,000 members across the nine provinces and three plan types. A
+A frequency-severity pricing model for health insurance, built in R on a synthetic South
+African portfolio of 100,000 members across the nine provinces and three benefit tiers. A
 negative binomial GLM predicts how often a member claims, a Gamma GLM predicts what each claim
-costs, and the two combine into a monthly risk premium with a 95% interval. Candidate models
+costs, and the two combine into a monthly risk premium with a 95% interval. A tariff then
+smooths the age curve so the premium never falls with age, and shows the cross-subsidy that
+creates. Candidate models
 are compared on a holdout, and because the data is synthetic, the fitted effects and the
 intervals are also checked against the true ones.
 
@@ -44,7 +46,8 @@ shortfall is large-claim noise, not model bias: 3% of claims come from a Pareto 
 `scripts/simulate.R` holds every true parameter and the simulation;
 `scripts/synthetic_data_generation.R` runs it once (seed 123) and writes
 `data/synthetic_health_insurance_data.csv`. The parameters are illustrative assumptions chosen to
-look plausible for a private medical scheme, not estimates from real data.
+look plausible for a health insurance portfolio, not estimates from real data. The provinces
+give the portfolio a South African geography; the product is generic health cover.
 
 | Variable | Generation |
 | --- | --- |
@@ -54,15 +57,15 @@ look plausible for a private medical scheme, not estimates from real data.
 | Children | Poisson, peaking for members around 40, capped at 5 |
 | Smoker | More common in men and falling with age (about 12% of women and 31% of men) |
 | BMI | Lognormal around 26, higher for women, rising with age to 60, clipped to 16 to 50 |
-| Plan | Hospital, Saver or Comprehensive, chosen by a multinomial logit: older members buy richer cover, families lean to Saver |
+| Plan | Essential (in-hospital treatment), Standard (adds out-of-hospital specialists, scans and tests) or Comprehensive (adds GP visits, prescribed medicines, dental and optical), chosen by a multinomial logit: older members buy richer cover, families lean to Standard |
 | Exposure | One policy year for 80% of policies, uniform 0.1 to 1 for the rest |
 | ClaimCount | Negative binomial: Poisson given a gamma frailty with variance 0.3 |
 | Charges | Sum over the policy's claims of independent costs: lognormal (sdlog 1.1) with probability 0.97, Pareto (alpha 2.3) large claims otherwise |
 
 On the log scale, claim frequency rises 0.025 a year with age and faster after 55, has a
 maternity peak for women around 31, rises with BMI above 25 and below 20, and is higher for
-smokers (+0.26) and per child (+0.22). Day-to-day benefits multiply the number of claims by 4
-(Saver) and 10 (Comprehensive) and the cost per claim by 0.45 and 0.25. Provinces outside
+smokers (+0.26) and per child (+0.22). Out-of-hospital cover multiplies the number of claims by 4
+(Standard) and 10 (Comprehensive) and the cost per claim by 0.45 and 0.25. Provinces outside
 Gauteng have lower frequency and cost, in line with lower private hospital use and tariffs.
 
 ## Models
@@ -102,6 +105,17 @@ calculator's default loading of 15% is an assumption. The 95% interval uses the 
 on the log scale with each model's coefficient covariance matrix; the two models' estimates are
 independent, so their variances add.
 
+**Tariff:** the fitted age factor for women rises to the maternity peak at about 31, dips and
+rises again, and a rate table that falls with age would be hard to justify to members. The
+tariff replaces each sex's fitted age and sex factor with the closest curve that never falls
+with age: a weighted isotonic regression (pool adjacent violators), weighted by the training
+portfolio's expected claims at each age. Pooling preserves the weighted total, so the tariff
+collects the same premium as the risk premium within each sex, and the difference is a
+cross-subsidy between ages. Women aged 31 to 41 pay one pooled factor: at 33 the tariff is 8.3%
+below the risk premium, at 38 it is 6.4% above. By band, women aged 30 to 34 pay 5.5% less than
+their expected claims, and women aged 35 to 39 and 40 to 44 pay 3.3% and 1.2% more. Men's fitted
+factor already rises with age, so their tariff equals their risk premium.
+
 **Risk classes:** the quartiles of the expected claims cost among holdout members on the same
 plan, since across plans the cost mostly reflects the benefits bought.
 
@@ -113,8 +127,8 @@ the time; F3's degrees of freedom are now chosen by AIC, which picks 10.
 
 Outputs:
 
-- `models/freq_model.rds`, `models/sev_model.rds` (with their covariance matrices) and
-  `models/portfolio_percentiles.rds`
+- `models/freq_model.rds`, `models/sev_model.rds` (with their covariance matrices),
+  `models/tariff.rds` and `models/portfolio_percentiles.rds`
 - `reports/validation.md` and `reports/coverage.md`, with every estimate in
   `reports/coverage_estimates.csv`
 - `dashboard/src/model.json` and `dashboard/src/coverage.json` for the calculator
@@ -123,10 +137,11 @@ Outputs:
 ## Calculator
 
 `dashboard/` is a React and TypeScript page with three views: pricing a member with the
-factor-by-factor build-up and the interval; fitted against true age and BMI curves and
-relativities; and the holdout checks, model comparison and coverage. It rebuilds each model's
+factor-by-factor build-up, the tariff smoothing and the interval; fitted against true age and
+BMI curves and relativities, with the tariff and its cross-subsidy; and the holdout checks, model comparison and coverage. It rebuilds each model's
 design row from the coefficient names and the exported spline bases, so the parity test can
-check that it matches R's predictions and standard errors on all 300 profiles to within 1e-9.
+check that it matches R's predictions, standard errors and tariff premiums on all 300 profiles
+to within 1e-9.
 
 ```bash
 Rscript scripts/synthetic_data_generation.R
@@ -143,17 +158,16 @@ The build is a static site, hosted on Azure Static Web Apps. The original Shiny 
 
 ## Limitations
 
-- South African medical schemes must charge community rates under the Medical Schemes Act: a
-  scheme cannot price by age, sex, health or province. A risk premium like this one shows the
-  underlying cost of each member, which matters for understanding cross-subsidies, the Risk
-  Equalisation Fund debate and products outside the Act such as gap cover, but it is not a
-  contribution a scheme could charge.
-- Synthetic data with illustrative parameters: the premiums are not real rates.
+- Synthetic data with illustrative parameters: the premiums are not real rates, and the
+  product is generic, not designed against any particular regulatory framework.
 - Principal members only; dependants enter through the number of children, and there are no
-  adult dependants, late joiner penalties, waiting periods or chronic condition benefits.
+  adult dependants, waiting periods, exclusions or pre-existing condition rules.
+- The tariff only smooths the age curve; it does not round to age bands or cap year-on-year
+  increases.
 - Frequency and severity are independent by construction, and the loading is a flat
   percentage.
-- No savings account mechanics, benefit limits, co-payments, inflation or credibility weighting.
+- No excesses, benefit limits, co-payments, inflation or credibility weighting; the tiers
+  differ only in scope of cover.
 
 ## Structure
 

@@ -27,7 +27,7 @@ profiles, the interval shown in the calculator.
 | --- | --- | --- | --- |
 | Smoker | 96.0% | 1.01 | 0.0010 |
 | Each child | 95.5% | 0.97 | 0.0002 |
-| Saver plan | 93.0% | 0.95 | 0.0007 |
+| Standard plan | 93.0% | 0.95 | 0.0007 |
 | Comprehensive plan | 95.5% | 1.03 | 0.0011 |
 | Western Cape | 90.5% | 0.89 | -0.0006 |
 | KwaZulu-Natal | 96.0% | 1.00 | 0.0015 |
@@ -44,7 +44,7 @@ profiles, the interval shown in the calculator.
 | --- | --- | --- | --- |
 | Smoker | 78.0% | 0.63 | 0.0011 |
 | Each child | 82.5% | 0.65 | 0.0003 |
-| Saver plan | 91.5% | 0.84 | 0.0007 |
+| Standard plan | 91.5% | 0.84 | 0.0007 |
 | Comprehensive plan | 90.0% | 0.85 | 0.0012 |
 | Western Cape | 77.5% | 0.61 | -0.0004 |
 | KwaZulu-Natal | 84.0% | 0.67 | 0.0014 |
@@ -62,7 +62,7 @@ profiles, the interval shown in the calculator.
 | Smoker | 94.0% | 1.04 | -0.0004 |
 | Each child | 94.5% | 0.96 | 0.0001 |
 | Male | 94.0% | 0.98 | 0.0002 |
-| Saver plan | 93.5% | 0.98 | -0.0003 |
+| Standard plan | 93.5% | 0.98 | -0.0003 |
 | Comprehensive plan | 95.0% | 0.99 | -0.0014 |
 | Western Cape | 95.0% | 0.99 | 0.0003 |
 | KwaZulu-Natal | 96.0% | 0.97 | -0.0001 |
@@ -77,20 +77,20 @@ profiles, the interval shown in the calculator.
 
 | Target | Coverage | SE ratio | Bias (log) |
 | --- | --- | --- | --- |
-| Base: woman, 40, Gauteng, Hospital | 88.0% | 0.95 | 0.0193 |
-| Man, 30, smoker, Western Cape, Saver | 94.5% | 1.04 | -0.0046 |
-| Woman, 31, 2 children, KwaZulu-Natal, Saver | 91.5% | 0.94 | -0.0106 |
+| Base: woman, 40, Gauteng, Essential | 88.0% | 0.95 | 0.0193 |
+| Man, 30, smoker, Western Cape, Standard | 94.5% | 1.04 | -0.0046 |
+| Woman, 31, 2 children, KwaZulu-Natal, Standard | 91.5% | 0.94 | -0.0106 |
 | Woman, 62, BMI 32, Gauteng, Comprehensive | 94.0% | 0.97 | -0.0023 |
 | Man, 50, 1 child, Limpopo, Comprehensive | 94.0% | 1.06 | -0.0062 |
-| Man, 78, smoker, BMI 30, Northern Cape, Hospital | 93.0% | 0.99 | -0.0008 |
+| Man, 78, smoker, BMI 30, Northern Cape, Essential | 93.0% | 0.99 | -0.0008 |
 
 ## Premium, Poisson x Gamma
 
 | Target | Coverage | SE ratio | Bias (log) |
 | --- | --- | --- | --- |
-| Base: woman, 40, Gauteng, Hospital | 84.0% | 0.85 | 0.0190 |
-| Man, 30, smoker, Western Cape, Saver | 90.5% | 0.90 | -0.0046 |
-| Woman, 31, 2 children, KwaZulu-Natal, Saver | 87.0% | 0.82 | -0.0115 |
+| Base: woman, 40, Gauteng, Essential | 84.0% | 0.85 | 0.0190 |
+| Man, 30, smoker, Western Cape, Standard | 90.5% | 0.90 | -0.0046 |
+| Woman, 31, 2 children, KwaZulu-Natal, Standard | 87.0% | 0.82 | -0.0115 |
 | Woman, 62, BMI 32, Gauteng, Comprehensive | 87.0% | 0.76 | -0.0021 |
 | Man, 50, 1 child, Limpopo, Comprehensive | 90.0% | 0.89 | -0.0060 |
-| Man, 78, smoker, BMI 30, Northern Cape, Hospital | 86.5% | 0.82 | 0.0002 |
+| Man, 78, smoker, BMI 30, Northern Cape, Essential | 86.5% | 0.82 | 0.0002 |
