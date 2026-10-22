@@ -3,11 +3,10 @@
 A frequency-severity pricing model for health insurance, built in R on a synthetic South
 African portfolio of 100,000 members across the nine provinces and three benefit tiers. A
 negative binomial GLM predicts how often a member claims, a Gamma GLM predicts what each claim
-costs, and the two combine into a monthly risk premium with a 95% interval. A tariff then
-smooths the age curve so the premium never falls with age, and shows the cross-subsidy that
-creates. Candidate models
-are compared on a holdout, and because the data is synthetic, the fitted effects and the
-intervals are also checked against the true ones.
+costs, and the two combine into a monthly risk premium with a 95% interval. A unisex tariff
+then charges women and men one smooth age curve that never falls with age, and shows the
+cross-subsidies that creates. Candidate models are compared on a holdout, and because the data
+is synthetic, the fitted effects and the intervals are also checked against the true ones.
 
 **Live calculator:** https://brave-desert-0f162c50f.3.azurestaticapps.net
 (also embedded at https://mdingi.co.za/work/health-insurance-pricing-model)
@@ -107,14 +106,17 @@ independent, so their variances add.
 
 **Tariff:** the fitted age factor for women rises to the maternity peak at about 31, dips and
 rises again, and a rate table that falls with age would be hard to justify to members. The
-tariff replaces each sex's fitted age and sex factor with the closest curve that never falls
-with age: a weighted isotonic regression (pool adjacent violators), weighted by the training
-portfolio's expected claims at each age. Pooling preserves the weighted total, so the tariff
-collects the same premium as the risk premium within each sex, and the difference is a
-cross-subsidy between ages. Women aged 31 to 41 pay one pooled factor: at 33 the tariff is 8.3%
-below the risk premium, at 38 it is 6.4% above. By band, women aged 30 to 34 pay 5.5% less than
-their expected claims, and women aged 35 to 39 and 40 to 44 pay 3.3% and 1.2% more. Men's fitted
-factor already rises with age, so their tariff equals their risk premium.
+tariff charges women and men the same rate at each age, so the maternity cost is shared across
+the book. The two sexes' fitted age and sex factors are averaged at each age, weighted by the
+training portfolio's expected claims, and the log of the average is graduated by
+Whittaker-Henderson smoothing (lambda = 100), which gives a curve that rises at least 1.1% a
+year. A constant rescale makes the tariff collect the same total premium as the risk premium.
+Each member's premium is the risk premium times tariff(age) / factor(age, sex), and the
+differences are cross-subsidies, in `reports/validation.md` by sex and age band. Women aged 25
+to 29 and 30 to 34 pay 9.6% and 18.1% less than their expected claims, and men of those ages
+15.3% and 15.1% more. Above 50 the flow reverses, since older men claim more than older women:
+women aged 60 to 69 pay 3.0% more and men 3.0% less. Across all ages, women pay 0.4% less and
+men 0.5% more.
 
 **Risk classes:** the quartiles of the expected claims cost among holdout members on the same
 plan, since across plans the cost mostly reflects the benefits bought.
@@ -137,8 +139,9 @@ Outputs:
 ## Calculator
 
 `dashboard/` is a React and TypeScript page with three views: pricing a member with the
-factor-by-factor build-up, the tariff smoothing and the interval; fitted against true age and
-BMI curves and relativities, with the tariff and its cross-subsidy; and the holdout checks, model comparison and coverage. It rebuilds each model's
+factor-by-factor build-up, the tariff and the interval; fitted against true age and BMI curves
+and relativities, with the tariff and its cross-subsidies; and the holdout checks, model
+comparison and coverage. It rebuilds each model's
 design row from the coefficient names and the exported spline bases, so the parity test can
 check that it matches R's predictions, standard errors and tariff premiums on all 300 profiles
 to within 1e-9.
@@ -163,7 +166,8 @@ The build is a static site, hosted on Azure Static Web Apps. The original Shiny 
 - Principal members only; dependants enter through the number of children, and there are no
   adult dependants, waiting periods, exclusions or pre-existing condition rules.
 - The tariff only smooths the age curve; it does not round to age bands or cap year-on-year
-  increases.
+  increases. Being unisex, it collects the right total only if the sex mix stays as priced: a
+  book that shifts towards women aged 25 to 39 would be underpriced.
 - Frequency and severity are independent by construction, and the loading is a flat
   percentage.
 - No excesses, benefit limits, co-payments, inflation or credibility weighting; the tiers

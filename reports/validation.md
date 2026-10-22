@@ -121,32 +121,36 @@ Ten bands of equal exposure, from lowest to highest predicted cost per policy ye
 
 ## Tariff and cross-subsidy
 
-The tariff replaces each sex's fitted age factor with the closest curve that never falls
-with age (weighted isotonic regression, weighted by the training portfolio's risk premium
-at each age), so it collects the same total premium as the risk premium within each sex.
-Ratio is tariff premium over risk premium on the training portfolio: above 1, the band pays
-more than its expected claims and subsidises the others.
+The tariff charges women and men the same rate at each age: the two sexes' fitted age
+factors are averaged, weighted by the training portfolio's risk premium, and the log of
+the average is graduated (Whittaker-Henderson, lambda = 100) and rescaled so the
+tariff collects the same total premium as the risk premium. Ratio is tariff premium over
+risk premium on the training portfolio: above 1, the band pays more than its expected
+claims and subsidises the others. Share is the band's share of the whole portfolio's risk
+premium.
 
 | Sex | Age band | Share of risk premium | Tariff over risk |
 | --- | --- | --- | --- |
-| female | 18 to 24 | 1.4% | 1.000 |
-| female | 25 to 29 | 4.0% | 1.000 |
-| female | 30 to 34 | 7.8% | 0.945 |
-| female | 35 to 39 | 9.2% | 1.033 |
-| female | 40 to 44 | 10.5% | 1.012 |
-| female | 45 to 49 | 11.0% | 1.000 |
-| female | 50 to 59 | 22.4% | 1.000 |
-| female | 60 to 69 | 20.0% | 1.000 |
-| female | 70 to 85 | 13.6% | 1.000 |
-| male | 18 to 24 | 1.5% | 1.000 |
-| male | 25 to 29 | 3.3% | 1.000 |
-| male | 30 to 34 | 5.7% | 1.000 |
-| male | 35 to 39 | 8.4% | 1.000 |
-| male | 40 to 44 | 11.0% | 1.000 |
-| male | 45 to 49 | 11.3% | 1.000 |
-| male | 50 to 59 | 23.3% | 1.000 |
-| male | 60 to 69 | 21.4% | 1.000 |
-| male | 70 to 85 | 14.1% | 1.000 |
+| female | 18 to 24 | 0.7% | 1.037 |
+| female | 25 to 29 | 2.1% | 0.904 |
+| female | 30 to 34 | 4.1% | 0.819 |
+| female | 35 to 39 | 4.8% | 0.965 |
+| female | 40 to 44 | 5.5% | 1.009 |
+| female | 45 to 49 | 5.7% | 0.997 |
+| female | 50 to 59 | 11.7% | 1.022 |
+| female | 60 to 69 | 10.4% | 1.030 |
+| female | 70 to 85 | 7.1% | 1.032 |
+| female | All ages | 52.2% | 0.996 |
+| male | 18 to 24 | 0.7% | 1.053 |
+| male | 25 to 29 | 1.6% | 1.153 |
+| male | 30 to 34 | 2.7% | 1.151 |
+| male | 35 to 39 | 4.0% | 1.093 |
+| male | 40 to 44 | 5.2% | 1.006 |
+| male | 45 to 49 | 5.4% | 0.993 |
+| male | 50 to 59 | 11.2% | 0.975 |
+| male | 60 to 69 | 10.2% | 0.970 |
+| male | 70 to 85 | 6.8% | 0.964 |
+| male | All ages | 47.8% | 1.005 |
 
 ## Relativities against the true parameters
 

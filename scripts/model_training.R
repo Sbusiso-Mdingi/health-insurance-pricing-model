@@ -370,46 +370,50 @@ curve <- function(var, values, sex = "female") {
 # --------------------------------------------------
 # The fitted age and sex factor for women rises to the maternity peak at
 # about 31, dips and rises again, and a published rate table should not
-# fall with age. The tariff replaces each sex's age factor with the closest
-# non-decreasing curve: a weighted isotonic regression (pool adjacent
-# violators), weighted by the risk premium the training portfolio has at
-# each age once the age and sex factor is taken out. Pooling preserves the
-# weighted total, so the tariff collects the same premium as the risk
-# premium within each sex. The difference is a cross-subsidy between ages:
-# members in a pooled block pay the block's average factor.
+# fall with age. The tariff charges men and women the same rate at each
+# age, so the maternity cost is shared across the book, and graduates that
+# unisex curve so it rises smoothly:
+#
+# 1. The unisex factor at each age is the average of the two sexes'
+#    factors, weighted by w, the risk premium the training portfolio has
+#    at that age and sex once the age and sex factor is taken out.
+# 2. Whittaker-Henderson graduation of its log: least squares weighted by
+#    each age's expected claims over the average age's, with a penalty
+#    lambda on second differences. Lambda = 18 is the least smoothing that
+#    makes the curve non-decreasing, but it leaves a near-flat stretch from
+#    34 to 38; lambda = 100 keeps it rising at least 1% a year.
+# 3. A constant rescale so the tariff collects the same total premium as
+#    the risk premium on the training portfolio.
+#
+# Every member's premium is multiplied by tariff(age) / factor(age, sex);
+# the differences are cross-subsidies between ages and between the sexes.
 
-pava <- function(y, w) {
-  v <- y; wt <- w; n <- rep(1, length(y)); k <- 0
-  for (i in seq_along(y)) {
-    k <- k + 1
-    v[k] <- y[i]; wt[k] <- w[i]; n[k] <- 1
-    while (k > 1 && v[k - 1] > v[k]) {
-      v[k - 1] <- (wt[k - 1] * v[k - 1] + wt[k] * v[k]) / (wt[k - 1] + wt[k])
-      wt[k - 1] <- wt[k - 1] + wt[k]
-      n[k - 1] <- n[k - 1] + n[k]
-      k <- k - 1
-    }
-  }
-  rep(v[1:k], n[1:k])
+graduate <- function(y, w, lambda) {
+  D2 <- diff(diag(length(y)), differences = 2)
+  drop(solve(diag(w) + lambda * crossprod(D2), w * y))
 }
 
 train$pred_rate <- predict_pure(train)
-risk_factor <- lapply(setNames(levels(base$Sex), levels(base$Sex)), function(s) {
+SEXES <- setNames(levels(base$Sex), levels(base$Sex))
+risk_factor <- lapply(SEXES, function(s) {
   a <- curve("Age", ages, s)
   exp(a$freq$fit + a$sev$fit)
 })
-tariff <- lapply(setNames(names(risk_factor), names(risk_factor)), function(s) {
-  f <- risk_factor[[s]]
+tariff_weight <- lapply(SEXES, function(s) {
   rows <- train$Sex == s
   i <- match(train$Age[rows], ages)
-  w <- vapply(seq_along(ages), function(j) {
-    sum((train$Exposure[rows] * train$pred_rate[rows] / f[i])[i == j])
+  vapply(seq_along(ages), function(j) {
+    sum((train$Exposure[rows] * train$pred_rate[rows] / risk_factor[[s]][i])[i == j])
   }, 0)
-  list(risk = f, tariff = pava(f, w), weight = w)
 })
-stopifnot(vapply(tariff, function(t) {
-  abs(sum(t$weight * t$tariff) / sum(t$weight * t$risk) - 1) < 1e-12 && !is.unsorted(t$tariff)
-}, TRUE))
+w_all <- Reduce(`+`, tariff_weight)
+unisex <- Reduce(`+`, Map(`*`, tariff_weight, risk_factor)) / w_all
+claims_weight <- w_all * unisex / mean(w_all * unisex)
+TARIFF_LAMBDA <- 100
+tariff_curve <- exp(graduate(log(unisex), claims_weight, TARIFF_LAMBDA))
+tariff_curve <- tariff_curve * sum(w_all * unisex) / sum(w_all * tariff_curve)
+stopifnot(!is.unsorted(tariff_curve))
+tariff <- lapply(SEXES, function(s) list(risk = risk_factor[[s]], tariff = tariff_curve))
 
 tariff_ratio <- function(df) {
   out <- numeric(nrow(df))
@@ -420,17 +424,20 @@ tariff_ratio <- function(df) {
   }
   out
 }
+stopifnot(abs(sum(train$Exposure * train$pred_rate * tariff_ratio(train)) /
+                sum(train$Exposure * train$pred_rate) - 1) < 1e-9)
 
-# Cross-subsidy by age band and sex on the training portfolio: tariff
-# premium over risk premium.
+# Cross-subsidy by sex and age band on the training portfolio: tariff
+# premium over risk premium. The "All ages" rows give the subsidy between
+# the sexes.
 age_bands <- list(c(18, 24), c(25, 29), c(30, 34), c(35, 39), c(40, 44), c(45, 49),
-                  c(50, 59), c(60, 69), c(70, 85))
+                  c(50, 59), c(60, 69), c(70, 85), c(18, 85))
 cross_subsidy <- do.call(c, lapply(names(tariff), function(s) {
   lapply(age_bands, function(b) {
     rows <- train$Sex == s & train$Age >= b[1] & train$Age <= b[2]
     risk <- train$Exposure[rows] * train$pred_rate[rows]
-    list(sex = s, band = sprintf("%d to %d", b[1], b[2]),
-         share = sum(risk) / sum(train$Exposure[train$Sex == s] * train$pred_rate[train$Sex == s]),
+    list(sex = s, band = if (all(b == c(18, 85))) "All ages" else sprintf("%d to %d", b[1], b[2]),
+         share = sum(risk) / sum(train$Exposure * train$pred_rate),
          ratio = sum(risk * tariff_ratio(train[rows, ])) / sum(risk))
   })
 }))
@@ -695,11 +702,13 @@ lines <- c(
   "",
   "## Tariff and cross-subsidy",
   "",
-  "The tariff replaces each sex's fitted age factor with the closest curve that never falls",
-  "with age (weighted isotonic regression, weighted by the training portfolio's risk premium",
-  "at each age), so it collects the same total premium as the risk premium within each sex.",
-  "Ratio is tariff premium over risk premium on the training portfolio: above 1, the band pays",
-  "more than its expected claims and subsidises the others.",
+  "The tariff charges women and men the same rate at each age: the two sexes' fitted age",
+  "factors are averaged, weighted by the training portfolio's risk premium, and the log of",
+  sprintf("the average is graduated (Whittaker-Henderson, lambda = %g) and rescaled so the", TARIFF_LAMBDA),
+  "tariff collects the same total premium as the risk premium. Ratio is tariff premium over",
+  "risk premium on the training portfolio: above 1, the band pays more than its expected",
+  "claims and subsidises the others. Share is the band's share of the whole portfolio's risk",
+  "premium.",
   "",
   "| Sex | Age band | Share of risk premium | Tariff over risk |",
   "| --- | --- | --- | --- |",

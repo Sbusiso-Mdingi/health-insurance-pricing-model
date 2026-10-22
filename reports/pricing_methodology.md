@@ -17,7 +17,7 @@ interval can be checked against it, which is not possible with real data.
 
 **Expected claims cost = Expected claims per policy year × Expected cost per claim**
 
-**Tariff premium = Expected claims cost × age smoothing** (section 7)
+**Tariff premium = Expected claims cost × tariff(age) / factor(age, sex)** (section 7)
 
 **Annual premium = Tariff premium × (1 + loading)**, and the monthly premium is one twelfth
 of that. The calculator's default loading of 15% for expenses and margin is an assumption, not
@@ -165,28 +165,45 @@ degrees of freedom are now chosen by AIC. `reports/coverage.md` has every row.
 ## 7. Tariff and Cross-Subsidy
 
 The fitted age and sex factor for women rises to the maternity peak at about 31, dips and rises
-again. A rate table in which the premium falls as a member ages would be hard to justify, so the
-tariff replaces each sex's fitted factor f(age) with the closest non-decreasing curve g(age): a
-weighted isotonic regression by pool adjacent violators, with weights
+again. A rate table in which the premium falls as a member ages would be hard to justify, and
+charging the maternity cost only to women of childbearing age would make cover dearest for them
+when they are most likely to need it. The tariff therefore charges women and men one curve in
+age:
 
-**w(age) = Σ over members of that age and sex of exposure × risk premium / f(age)**,
+1. **Unisex factor.** At each age, u(age) = Σ_s w_s(age) f_s(age) / Σ_s w_s(age), where f_s is
+   the fitted age and sex factor for sex s and
 
-the premium each age would carry with a factor of 1. Pooling preserves Σ w f = Σ w g, so the
-tariff collects exactly the same premium as the risk premium within each sex, and every member's
-premium is multiplied by g(age) / f(age).
+   **w_s(age) = Σ over members of that age and sex of exposure × risk premium / f_s(age)**,
 
-For women, ages 31 to 41 pool into one factor. Women at the peak pay less than their expected
-claims (8.3% less at 33) and women in their late thirties pay more (6.4% more at 38):
+   the premium each age and sex would carry with a factor of 1.
+2. **Graduation.** log g minimises Σ c(age) (log g − log u)² + λ Σ (Δ² log g)², the
+   Whittaker-Henderson criterion, with c(age) each age's expected claims over the average age's
+   and λ = 100. λ = 18 is the least smoothing that makes the curve non-decreasing, but it leaves
+   a near-flat stretch from 34 to 38; at 100 the curve rises at least 1.1% a year at every age.
+3. **Rescale.** g is multiplied by a constant so that Σ (w_female + w_male) g = Σ_s Σ w_s f_s:
+   the tariff collects the same total premium as the risk premium on the training portfolio.
 
-| Women, age band | Tariff over risk premium |
-| --- | --- |
-| 30 to 34 | 0.945 |
-| 35 to 39 | 1.033 |
-| 40 to 44 | 1.012 |
-| All other bands | 1.000 |
+Every member's premium is multiplied by g(age) / f_s(age). On the training portfolio, the tariff
+over the risk premium is:
 
-Men's fitted factor already rises with age, so their tariff equals the risk premium. The
-cross-subsidy stays within each sex; a unisex tariff would also move cost between women and men.
+| Age band | Women | Men |
+| --- | --- | --- |
+| 18 to 24 | 1.037 | 1.053 |
+| 25 to 29 | 0.904 | 1.153 |
+| 30 to 34 | 0.819 | 1.151 |
+| 35 to 39 | 0.965 | 1.093 |
+| 40 to 44 | 1.009 | 1.006 |
+| 45 to 49 | 0.997 | 0.993 |
+| 50 to 59 | 1.022 | 0.975 |
+| 60 to 69 | 1.030 | 0.970 |
+| 70 to 85 | 1.032 | 0.964 |
+| All ages | 0.996 | 1.005 |
+
+Men aged 25 to 39 carry most of the maternity cost. Above 50 the flow reverses, because older
+men claim more than older women, so the net subsidy between the sexes is under 1% of premium.
+Members aged 18 to 24 pay a little more than their expected claims because the smoothing lifts
+the steep start of the curve, where there are few members. A unisex tariff collects the right
+total only for the sex and age mix it was priced on.
 
 ---
 
@@ -204,6 +221,6 @@ Comparing across plans would mostly measure the benefits bought, not the member'
 - Principal members only; no adult dependants, waiting periods, exclusions, excesses, benefit
   limits or co-payments. The tiers differ only in scope of cover.
 - The tariff only smooths the age curve; it does not round to age bands or cap year-on-year
-  increases.
+  increases, and as a unisex rate it is exposed to a change in the sex mix.
 - Frequency and severity are independent by construction.
 - A flat loading, and no inflation, trend or credibility weighting.

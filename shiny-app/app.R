@@ -47,8 +47,8 @@ price <- function(df) {
   )
 }
 
-# The tariff replaces the fitted age and sex factor with each sex's
-# non-decreasing tariff curve; this is the ratio of the two
+# The tariff replaces the fitted age and sex factor with one graduated
+# curve for both sexes; this is the ratio of the two
 tariff_ratio <- function(df) {
   i <- match(paste(df$Age, df$Sex), paste(tariff$Age, tariff$Sex))
   tariff$tariff[i] / tariff$risk[i]
@@ -154,8 +154,8 @@ ui <- fluidPage(
       hr(),
       p(
         paste(
-          "Synthetic data. Demonstration use only. The tariff smooths the age curve so the premium",
-          "never falls with age, collecting the same total premium within each sex."
+          "Synthetic data. Demonstration use only. The tariff charges women and men one smooth rate",
+          "curve that never falls with age, collecting the same total premium as the risk premium."
         ),
         class = "text-center text-muted"
       )
@@ -229,7 +229,7 @@ server <- function(input, output, session) {
         "Expected claims per year",
         "Expected cost per claim",
         "Expected claims cost per year",
-        "Tariff age smoothing",
+        "Unisex age tariff",
         "Annual premium",
         "Monthly premium"
       ),

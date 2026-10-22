@@ -146,8 +146,8 @@ export function quote(p: Profile) {
   const se = Math.sqrt(f.se ** 2 + s.se ** 2);
   const cf = groupContributions(FREQUENCY, p);
   const cs = groupContributions(SEVERITY, p);
-  // The tariff replaces the fitted age and sex factor with each sex's
-  // non-decreasing tariff curve; smoothing is the ratio of the two.
+  // The tariff replaces the fitted age and sex factor with one graduated
+  // curve for both sexes; smoothing is the ratio of the two.
   const ageSex = GROUPS.findIndex((g) => g.includes("Age"));
   const smoothing = TARIFF[p.sex].tariff[ageIndex(p.age)] / Math.exp(cf[ageSex] + cs[ageSex]);
   return {
