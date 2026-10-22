@@ -1,8 +1,5 @@
 library(shiny)
-library(dplyr)
 library(splines)
-library(MASS)
-library(broom)
 library(bslib)
 library(ggplot2)
 
@@ -10,23 +7,30 @@ library(ggplot2)
 # LOAD TRAINED MODELS
 # --------------------------------------------------
 
-freq_pois  <- readRDS("../models/freq_model.rds")
-sev_lm     <- readRDS("../models/sev_model.rds")
-sigma_hat  <- readRDS("../models/sigma_hat.rds")
+freq_glm    <- readRDS("../models/freq_model.rds")
+sev_glm     <- readRDS("../models/sev_model.rds")
+percentiles <- readRDS("../models/portfolio_percentiles.rds")
 
 # --------------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------------
 
-predict_expected_severity <- function(model, newdata, sigma) {
-  mu_log <- predict(model, newdata = newdata)
-  exp(mu_log + 0.5 * sigma^2)
+# Expected claims per policy year (Poisson GLM, exposure set to one year)
+predict_frequency <- function(df) {
+  df$Exposure <- 1
+  predict(freq_glm, newdata = df, type = "response")
 }
 
+# Expected cost per claim (Gamma GLM with a log link)
+predict_severity <- function(df) predict(sev_glm, newdata = df, type = "response")
+
 expected_premium <- function(df, loading = 0) {
-  freq <- predict(freq_pois, newdata = df, type = "response")
-  sev  <- predict_expected_severity(sev_lm, df, sigma_hat)
-  freq * sev * (1 + loading)
+  predict_frequency(df) * predict_severity(df) * (1 + loading)
+}
+
+# Share of the holdout portfolio with a lower pure premium
+portfolio_percentile <- function(pure) {
+  approx(percentiles, seq(0, 100, by = 1), xout = pure, rule = 2, ties = "ordered")$y
 }
 
 # --------------------------------------------------
@@ -35,11 +39,10 @@ expected_premium <- function(df, loading = 0) {
 
 theme <- bs_theme(
   version = 5,
-  bootswatch = "darkly",
-  bg = "#0b0b0b",
-  fg = "#f2f2f2",
-  primary = "#1abc9c",
-  base_font = font_google("Inter")
+  bg = "#f7f6f2",
+  fg = "#111614",
+  primary = "#94600f",
+  base_font = font_google("Lato")
 )
 
 # --------------------------------------------------
@@ -55,7 +58,7 @@ ui <- fluidPage(
       h1("Health Insurance Pricing Dashboard",
          class = "text-center mt-4 mb-1"),
       p(
-        "Frequency–Severity Pricing Model",
+        "Frequency and severity pricing model",
         class = "text-center text-muted mb-4"
       )
     )
@@ -68,12 +71,12 @@ ui <- fluidPage(
       4,
       
       card(
-        card_header("Policyholder Characteristics"),
-        sliderInput("age", "Age", min = 18, max = 100, value = 30),
+        card_header("Policyholder characteristics"),
+        sliderInput("age", "Age", min = 18, max = 85, value = 30),
         sliderInput("bmi", "BMI", min = 18, max = 45, value = 25, step = 0.1),
-        sliderInput("children", "Number of Children", min = 0, max = 5, value = 0),
+        sliderInput("children", "Number of children", min = 0, max = 5, value = 0),
         selectInput("sex", "Sex", choices = c("male", "female")),
-        selectInput("smoker", "Smoking Status", choices = c("no", "yes")),
+        selectInput("smoker", "Smoking status", choices = c("no", "yes")),
         selectInput(
           "region",
           "Region",
@@ -82,10 +85,10 @@ ui <- fluidPage(
       ),
       
       card(
-        card_header("Pricing Assumptions"),
+        card_header("Pricing assumptions"),
         sliderInput(
           "loading",
-          "Total Loading (Expenses + Profit)",
+          "Total loading (expenses and profit)",
           min = 0,
           max = 1,
           value = 0.30,
@@ -99,25 +102,25 @@ ui <- fluidPage(
       8,
       
       card(
-        card_header("Indicative Annual Premium"),
+        card_header("Indicative annual premium"),
         h2(
           textOutput("premium"),
-          class = "text-center fw-bold text-success"
+          class = "text-center fw-bold"
         ),
         uiOutput("risk_badge"),
         p(
-          "Expected annual premium per policyholder, including loadings.",
+          "Expected annual premium for one policy year, including loadings.",
           class = "text-center text-muted"
         )
       ),
       
       card(
-        card_header("Pricing Breakdown"),
+        card_header("Pricing breakdown"),
         tableOutput("breakdown")
       ),
       
       card(
-        card_header("Age–Premium Curve (Other Factors Held Constant)"),
+        card_header("Premium by age, other factors held constant"),
         plotOutput("age_curve", height = "250px")
       )
     )
@@ -139,17 +142,17 @@ ui <- fluidPage(
 # SERVER
 # --------------------------------------------------
 
-server <- function(input, output) {
+server <- function(input, output, session) {
   
   user_data <- reactive({
     data.frame(
       Age = input$age,
-      Sex = factor(input$sex, levels = c("male", "female")),
+      Sex = factor(input$sex, levels = c("female", "male")),
       BMI = input$bmi,
       Smoker = factor(input$smoker, levels = c("no", "yes")),
       Region = factor(
         input$region,
-        levels = c("southeast", "southwest", "northeast", "northwest")
+        levels = c("northeast", "northwest", "southeast", "southwest")
       ),
       Children = input$children
     )
@@ -168,49 +171,41 @@ server <- function(input, output) {
   })
   
   # -------- Risk Badge --------
+  # Risk class from the quartiles of the pure premium on the holdout portfolio
   output$risk_badge <- renderUI({
-    
-    # Simulated portfolio benchmark
-    ages <- 18:85
-    benchmark <- data.frame(
-      Age = ages,
-      Sex = "male",
-      BMI = 25,
-      Smoker = "no",
-      Region = "southeast",
-      Children = 0
-    )
-    
-    portfolio_premiums <- expected_premium(benchmark)
-    q40 <- quantile(portfolio_premiums, 0.40)
-    q75 <- quantile(portfolio_premiums, 0.75)
-    
-    risk_class <- if (premium_val() < q40) {
-      list("Low Risk", "success")
-    } else if (premium_val() < q75) {
-      list("Medium Risk", "warning")
+    pct <- portfolio_percentile(expected_premium(user_data()))
+    risk_class <- if (pct < 25) {
+      list("Low risk", "success")
+    } else if (pct < 50) {
+      list("Moderate risk", "info")
+    } else if (pct < 75) {
+      list("High risk", "warning")
     } else {
-      list("High Risk", "danger")
+      list("Very high risk", "danger")
     }
-    
+
     tags$div(
-      class = paste0("badge bg-", risk_class[[2]], " fs-6 mt-2"),
-      risk_class[[1]]
+      class = "text-center",
+      tags$span(class = paste0("badge bg-", risk_class[[2]], " fs-6 mt-2"), risk_class[[1]]),
+      tags$p(
+        class = "text-muted mt-2 mb-0",
+        sprintf("Higher pure premium than %.0f%% of the portfolio", pct)
+      )
     )
   })
   
   # -------- Breakdown --------
   output$breakdown <- renderTable({
-    freq <- predict(freq_pois, user_data(), type = "response")
-    sev  <- predict_expected_severity(sev_lm, user_data(), sigma_hat)
+    freq <- predict_frequency(user_data())
+    sev  <- predict_severity(user_data())
     pure <- freq * sev
     
     data.frame(
       Metric = c(
-        "Expected Claim Frequency",
-        "Expected Claim Severity",
-        "Pure Premium",
-        "Final Premium"
+        "Expected claims per year",
+        "Expected cost per claim",
+        "Pure premium",
+        "Final premium"
       ),
       Value = c(
         round(freq, 4),
@@ -236,7 +231,7 @@ server <- function(input, output) {
     age_df$Premium <- expected_premium(age_df, input$loading)
     
     ggplot(age_df, aes(Age, Premium)) +
-      geom_line(color = "#1abc9c", linewidth = 1.2) +
+      geom_line(color = "#e0a449", linewidth = 1.2) +
       geom_vline(xintercept = input$age, linetype = "dashed", alpha = 0.6) +
       theme_minimal(base_size = 12) +
       theme(
@@ -247,7 +242,7 @@ server <- function(input, output) {
       ) +
       labs(
         x = "Age",
-        y = "Annual Premium"
+        y = "Annual premium"
       )
   })
 }
